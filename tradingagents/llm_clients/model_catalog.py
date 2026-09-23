@@ -218,7 +218,18 @@ MODEL_OPTIONS: ProviderModeOptions = {
         ],
     },
     "groq": _CUSTOM_ONLY,
-    "nvidia": _CUSTOM_ONLY,
+    # NVIDIA NIM free endpoints (build.nvidia.com): trial credits, for testing
+    # and evaluation only. Supports function calling.
+    "nvidia": {
+        "quick": [
+            ("Nemotron 3 Super 120B - Fast, 1M ctx, tool calling", "nvidia/nemotron-3-super-120b-a12b"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("Nemotron 3 Super 120B - Fast, 1M ctx, tool calling", "nvidia/nemotron-3-super-120b-a12b"),
+            ("Custom model ID", "custom"),
+        ],
+    },
     # Bedrock model IDs / cross-region inference profile IDs are user-specified.
     "bedrock": _CUSTOM_ONLY,
 }
