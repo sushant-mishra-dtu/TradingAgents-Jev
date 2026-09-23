@@ -174,6 +174,10 @@ For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill i
 
 For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-4-8-v1:0`.
 
+For NVIDIA NIM, set `llm_provider: "nvidia"`. The picker lists Nemotron 3 Super 120B (`nvidia/nemotron-3-super-120b-a12b`, 1M context, tool calling) for both the quick and deep model; pick "Custom model ID" for any other NIM model. The free build.nvidia.com endpoints run on trial credits and are meant for testing and evaluation.
+
+Shared and trial endpoints such as NVIDIA NIM sometimes return bursts of server errors mid-run. For OpenAI and every OpenAI-compatible provider (all of the above except Anthropic, Google, Azure and Bedrock), a call that hits a 5xx, a dropped connection or a rate limit is retried after 10, 20, 40, 60 and 60 seconds, on top of the SDK's own quick retries, before the run fails. Each retry is logged.
+
 For local models, configure Ollama with `llm_provider: "ollama"`. The default endpoint is `http://localhost:11434/v1`; set `OLLAMA_BASE_URL` to point at a remote `ollama-serve`. Pull models with `ollama pull <name>`, and pick "Custom model ID" in the CLI for any model not listed by default.
 
 For any other OpenAI-compatible server (vLLM, LM Studio, llama.cpp, or a custom relay), use `llm_provider: "openai_compatible"` and set the endpoint via `backend_url` (or `TRADINGAGENTS_LLM_BACKEND_URL`), e.g. `http://localhost:8000/v1` for vLLM or `http://localhost:1234/v1` for LM Studio. The model is whatever your server serves. No key is needed for local servers; set `OPENAI_COMPATIBLE_API_KEY` when the endpoint requires one.
@@ -199,12 +203,12 @@ The same workflow in a browser, plus a history of past reports and a backtest da
 tradingagents ui       # serves http://localhost:8501 and opens the Analyze page
 tradingagents ui --port 8600 --no-browser
 ```
-- **Analyze** — pick a ticker, date, analysts and an optional portfolio file, then watch each desk of the pipeline, the metrics, tool calls and report sections as the run streams in. The portfolio manager's rating shows at the end, and the full report is saved under `results_dir/reports`.
+- **Analyze** — pick a ticker, date, analysts and an optional portfolio file, then watch each desk of the pipeline, the metrics, tool calls and report sections as the run streams in. The portfolio manager's rating shows at the end, and the full report is saved under `results_dir/reports`. The ticker box searches by symbol or company name, so "reliance industries" offers `RELIANCE.NS` and "tencent" offers `0700.HK`; a provider retry shows in the run's activity log instead of the run looking stalled.
 - **Sentiment** — with Jev on, every news article and social post the Sentiment Analyst judged: its stance, event type, relevance and whether it was kept, or dropped as a duplicate, off-topic or an injected instruction. Open it from a live run or from a saved report.
 - **Reports** — read any saved report by section, and browse the decision log with each call's alpha, decision and reflection.
-- **Backtest** — start a grid sweep, follow the cell being run, stop it between cells, then compare mean alpha and hit rate by rating.
+- **Backtest** — start a grid sweep (the tickers box completes each comma-separated entry the same way), follow the cell being run, stop it between cells, then compare mean alpha and hit rate by rating.
 
-Model settings live in the sidebar of the Analyze page and share the CLI's remembered answers and `.env` overrides. Runs continue in the background, so reloading the page does not stop them. The server binds to `127.0.0.1`; pass `--host 0.0.0.0` only on a network you trust, since the page starts paid LLM runs. `http://localhost:8501/` itself is an overview page, and the light/dark theme follows your system unless you pick one.
+Ticker search asks Yahoo Finance and falls back to a built-in list of well-known symbols when Yahoo is unreachable or rate-limited. Model settings live in the sidebar of the Analyze page and share the CLI's remembered answers and `.env` overrides. Runs continue in the background, so reloading the page does not stop them. The server binds to `127.0.0.1`; pass `--host 0.0.0.0` only on a network you trust, since the page starts paid LLM runs. `http://localhost:8501/` itself is an overview page, and the light/dark theme follows your system unless you pick one.
 
 ### TypeSafe Jev (optional)
 

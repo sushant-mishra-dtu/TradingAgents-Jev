@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+TradingAgents-Jev, the fork's additions on top of 0.5.0: TypeSafe Jev
+judgments at four points in the pipeline, and a browser UI.
+
+### Highlights
+
+- **Sentiment from per-item judgments.** With the `jev` extra and `TYPESAFE_API_KEY`, the Sentiment Analyst has Jev judge each news article and social post. Code drops items about other companies, repeats, and posts carrying instructions aimed at an AI system, then computes the sentiment band, score and confidence from the per-item stances. The LLM writes only the narrative.
+- **Debates stop when they converge.** The bull/bear and risk debates end at a round boundary once a full round adds no new argument. They never stop before round 2 or run past the configured rounds, so this applies from three rounds up. The Research Manager gets Jev's read of which side's case is better supported, as a hint.
+- **The Portfolio Manager's claims are checked.** The Investment Thesis is checked against the analyst reports, which the Portfolio Manager never reads itself. Figures are matched in code, and a claim that can only be settled by comparing numbers is marked unverified. A contradicted claim, or a thesis whose claims are mostly not found in the reports, turns the rating into `REVIEW`.
+- **Learning from the reports.** `tradingagents learn <run id>` asks Jev 14 fixed questions about each settled backtest decision and fits a small logistic model of whether the decision beat its benchmark. It then reports whether the model beats the rating alone on held-out dates, which questions help, and which decisions it predicted worst. Nothing in an analysis run uses the model yet.
+- **Browser UI.** `tradingagents ui` serves Analyze, Sentiment, Reports and Backtest pages on `127.0.0.1:8501`, and needs nothing beyond the base install.
+
+### Jev
+
+- New `jev` extra (`typesafe-sdk`) and config keys `jev_enabled`, `jev_claim_check` and `jev_model` (`TRADINGAGENTS_JEV_ENABLED`, `TRADINGAGENTS_JEV_CLAIM_CHECK`, `TRADINGAGENTS_JEV_MODEL`).
+- Without the extra, without a key, or with `jev_enabled: False`, every stage runs as it did in 0.5.0. A failed Jev request falls back to the previous behaviour for that item, turn or check.
+- The sentiment judgments are saved with the report, and the run log records each debate's per-turn `new_argument` scores and the `stronger_side` probabilities, so the policies can be tuned.
+- The claim check always ends its block with the rating label.
+- Thresholds live in `SentimentPolicy` and `DebatePolicy`. See [docs/jev-use-cases.md](docs/jev-use-cases.md).
+
+### Browser UI
+
+- **Analyze** streams each desk, the metrics, tool calls and report sections of a run, which carries on in the background if the page reloads. **Sentiment** shows every item Jev judged and why it was kept or dropped. **Reports** reads saved reports and the decision log. **Backtest** starts, follows and stops a grid sweep, then compares alpha and hit rate by rating.
+- Ticker fields search by symbol or company name through Yahoo Finance, with a built-in list of well-known symbols when Yahoo is unreachable. The backtest field completes each comma-separated entry.
+- A provider retry appears in the run's activity log, so a run that is backing off does not look stalled.
+- `run_backtest` takes `on_cell` and `should_stop` callbacks. A sweep stopped between cells resumes like an interrupted one.
+
+### Models
+
+- NVIDIA NIM lists Nemotron 3 Super 120B (`nvidia/nemotron-3-super-120b-a12b`) for both the quick and deep model, instead of a custom ID only.
+- OpenAI and the OpenAI-compatible providers retry a 5xx, a dropped connection or a rate limit after 10, 20, 40, 60 and 60 seconds, on top of the SDK's own retries. One burst of errors from a shared endpoint no longer ends a whole run.
+
 ## [0.5.0] — 2026-09-18
 
 Point-in-time integrity across every dated path, decisions that are recorded as
