@@ -27,7 +27,7 @@
 
 ---
 
-> **TradingAgents-Jev** is a fork of [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (Apache 2.0). It adds [TypeSafe Jev](https://docs.typesafe.ai) per-item judgments to the Sentiment Analyst, a check of the Portfolio Manager's claims against the analyst reports, and a browser UI; see [TypeSafe Jev (optional)](#typesafe-jev-optional) and [Browser UI](#browser-ui). All credit for the underlying framework goes to the original authors.
+> **TradingAgents-Jev** is a fork of [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (Apache 2.0). It adds [TypeSafe Jev](https://docs.typesafe.ai) per-item judgments to the Sentiment Analyst, a check of the Portfolio Manager's claims against the analyst reports, a way to test Jev judgments of a backtest's reports against its outcomes, and a browser UI; see [TypeSafe Jev (optional)](#typesafe-jev-optional) and [Browser UI](#browser-ui). All credit for the underlying framework goes to the original authors.
 
 # TradingAgents: Multi-Agents LLM Financial Trading Framework
 
@@ -210,7 +210,9 @@ Model settings live in the sidebar of the Analyze page and share the CLI's remem
 
 With `pip install ".[jev]"` and `TYPESAFE_API_KEY` set, the Sentiment Analyst first judges each news article and social post with [TypeSafe Jev](https://docs.typesafe.ai). It drops items about other companies, repeats, and posts carrying instructions aimed at an AI system, then computes the sentiment band, score and confidence from per-item stances; the LLM writes only the narrative.
 
-At the end of the run, the Portfolio Manager's Investment Thesis is checked against the analyst reports, which the Portfolio Manager never reads itself. Jev judges which claims are checkable facts and whether each report section supports or contradicts them; figures are matched in code, and a claim that could only be settled by comparing numbers is marked unverified rather than judged. The result is appended to the decision, and a contradicted claim, or a thesis whose claims are mostly not found in the reports, turns the rating into `REVIEW` instead of a trade. Set `TRADINGAGENTS_JEV_CLAIM_CHECK=false` to turn off the claim check alone, or `TRADINGAGENTS_JEV_ENABLED=false` to keep the previous behaviour everywhere. Details: [docs/jev-use-cases.md](docs/jev-use-cases.md).
+At the end of the run, the Portfolio Manager's Investment Thesis is checked against the analyst reports, which the Portfolio Manager never reads itself. Jev judges which claims are checkable facts and whether each report section supports or contradicts them; figures are matched in code, and a claim that could only be settled by comparing numbers is marked unverified rather than judged. The result is appended to the decision, and a contradicted claim, or a thesis whose claims are mostly not found in the reports, turns the rating into `REVIEW` instead of a trade. Set `TRADINGAGENTS_JEV_CLAIM_CHECK=false` to turn off the claim check alone, or `TRADINGAGENTS_JEV_ENABLED=false` to keep the previous behaviour everywhere.
+
+After a backtest, `tradingagents learn <run id>` tests whether Jev's judgments of the reports predict outcomes better than the rating alone; see [Learning from the reports](#learning-from-the-reports-jev). Details: [docs/jev-use-cases.md](docs/jev-use-cases.md).
 
 ### Markets and tickers
 
@@ -361,6 +363,25 @@ tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
 ```
 
 Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. Your own decision log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
+
+### Learning from the reports (Jev)
+
+A backtest also keeps every cell's reports, so they can be tested against the outcomes. With the `jev` extra and `TYPESAFE_API_KEY` set:
+
+```bash
+tradingagents backtest NVDA,AAPL,MSFT,AMD --start 2026-03-02 --end 2026-08-31 --every 7 --run-id sweep1
+tradingagents learn sweep1
+```
+
+`learn` asks Jev 14 fixed questions about each settled decision's reports, debates and final decision, such as the price trend, how stretched the valuation is, and which side won the bull/bear debate. It turns the answers into numeric columns and fits a small logistic model of whether the decision beat its benchmark. It holds out the latest dates, and then reports three things:
+
+- whether the model predicts better than the rating alone on the held-out dates;
+- which questions help;
+- which decisions it predicted worst.
+
+Every split is chronological, and a decision trains a model only if its outcome was already known. The answers are cached, so running `learn` again, or adding a question, asks Jev only what it has not answered. A feature table, `report_features.csv`, is written to the run folder.
+
+This needs at least 40 settled decisions over 6 analysis dates, and many more before a result means much. Nothing in an analysis run uses the model yet. Details, and a live check of the questions: [Fit 5 as built](docs/jev-use-cases.md#fit-5-as-built).
 
 ## Reproducibility
 

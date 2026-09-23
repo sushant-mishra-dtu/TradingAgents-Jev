@@ -162,16 +162,24 @@ LLM's rating.
 **Method:** a fixed set of Score and Noul questions per analyst report (for
 example: fundamentals trend, valuation stretch, sentiment extremity, catalyst
 proximity, risk-debate asymmetry). Each Score becomes two columns (expected
-level and spread), each Noul one probability column. Train a small model
-(CatBoost or logistic) on the alpha outcomes already stored in the decision
-log. Grow the question set by proposing new questions from the worst-predicted
-cases, keeping only questions that improve held-out error.
+level and spread), each Noul one probability column. Train a small model on the
+alpha outcomes in a backtest's decision log, joined to the reports that each
+cell saved. The model is logistic, since a sweep has tens to hundreds of
+decisions; CatBoost would need more. Grow the question set by proposing new
+questions from the worst-predicted cases, keeping only questions that improve
+held-out error.
 
-**Where:** [`backtest.py`](../tradingagents/backtest.py) and the resolved
-entries in [`memory.py`](../tradingagents/agents/utils/memory.py).
+**Where:** a new command, `tradingagents learn`, over a
+[`backtest.py`](../tradingagents/backtest.py) run. It reads the resolved entries
+of the run's [`memory.py`](../tradingagents/agents/utils/memory.py) log and the
+full state each cell saved.
 
 **Prerequisite:** enough resolved backtest decisions to train and hold out
-data. This is the largest potential upside and the last to build.
+data. This is the largest potential upside.
+
+**Status:** started. The questions, the model, the evaluation and the command
+are built. Proposing new questions is not automated yet, and the signal is not
+used in live runs. See [Fit 5 as built](#fit-5-as-built).
 
 **Jev sources:** [Autoresearch Feature Discovery](https://docs.typesafe.ai/cookbooks/autoresearch_feature_discovery.md),
 [Composite Scoring](https://docs.typesafe.ai/patterns/composite-scoring.md).
@@ -249,7 +257,9 @@ model, using analyst-report agreement judgments from fits 2 and 3.
 2. ~~**Fit 4**~~ (built, ahead of fit 3): claim verification on the final decision.
 3. **Fit 3**: debate convergence, a direct cost saving.
 4. **Fits 6–10** as needed.
-5. **Fit 5** once the backtest has enough resolved decisions.
+5. **Fit 5** (started): the features, the model and `tradingagents learn` are
+   built. Next, run a backtest with enough settled decisions, then grow the
+   question set from what that shows.
 
 Every integration should degrade to current behavior when `TYPESAFE_API_KEY`
 is unset or the `jev` extra is not installed.
@@ -422,3 +432,169 @@ watching live: sentences that open with a pronoun
 ("It grew 22%") reach Jev without their subject, and the checkable filter
 decides how many of the Portfolio Manager's remarks about the debate are
 checked at all.
+
+## Fit 5 as built
+
+**Code:** [`report_features.py`](../tradingagents/report_features.py)
+(documents, questions, answer cache, extraction, loading decisions,
+`learn_from_run`), [`outcome_model.py`](../tradingagents/outcome_model.py)
+(logistic model, chronological splits, evaluation), and the `learn` command in
+[`cli/main.py`](../cli/main.py). Tests:
+[`test_jev_report_features.py`](../tests/test_jev_report_features.py) and
+[`test_outcome_model.py`](../tests/test_outcome_model.py). Nothing in an
+analysis run changes: this reads a finished backtest.
+
+```bash
+tradingagents backtest NVDA,AAPL,MSFT,AMD --start 2026-03-02 --end 2026-08-31 --every 7 --run-id sweep1
+tradingagents learn sweep1
+```
+
+**Flow per backtest run:**
+1. Read the run's decision log, and keep each settled decision that has an
+   alpha and a resolution date. Join it to the full state its cell saved,
+   `<TICKER>/TradingAgentsStrategy_logs/full_states_log_<date>.json` in the run
+   folder. A run with fewer than 40 such decisions, or fewer than 6 analysis
+   dates, is refused before any Jev request.
+2. Each decision has seven documents: the four analyst reports, the bull and
+   bear debate, the risk debate, and the Portfolio Manager's decision without
+   its claim-check block. One request per document asks all of that document's
+   questions. The state is the ticker and the document's kind and text.
+3. Each Score becomes two columns: its expected level (0 to its top level) and
+   the standard deviation of its level distribution. Each Noul becomes one, its
+   probability. That makes 24 Jev columns. Code adds `rating`, the Portfolio
+   Manager's own rating from Buy (1) to Sell (−1), read from the text before the
+   claim-check block, so a decision sent to `REVIEW` keeps it. It also adds
+   `review`, 1 when the logged rating is `REVIEW`.
+4. Answers are cached in `<data_cache_dir>/jev_report_features.json`, keyed by
+   the model name, the question and the state. Asking again sends nothing. A new
+   or reworded question sends only that question. After a failed request, the
+   answers already received stay cached.
+5. The target is whether the decision's alpha was above 0. Three L2-penalised
+   logistic models are fitted: the base rate (no columns), the rating (`rating`
+   and `review`), and the rating plus the Jev columns. A missing document's
+   columns take the training mean.
+6. The last 25% of analysis dates are held out (`--holdout`). The earlier dates
+   are cross-validated walk-forward, in 4 expanding folds. A decision trains a
+   model only if its resolution date is before the first date that model is
+   tested on: its holding window overlaps the next week's, and a shuffled split
+   would train on outcomes from the test period. Each model's penalty is chosen
+   on those folds (0.3 to 30), and each model is then scored once on the held-out
+   dates.
+7. For each question, the dev log loss of the full model without its columns,
+   minus with them. Keep a question while this is above 0, as the cookbook
+   does. A question whose columns all have a standard deviation under 0.05 on
+   the dev decisions is flat. The five decisions the full model predicted worst
+   are listed as the cases to read when proposing new questions.
+
+**Questions (14):**
+
+| Id | Document | Primitive | Asks |
+| --- | --- | --- | --- |
+| `price_trend` | market | Score (5) | the trend the report describes, strong downtrend to strong uptrend |
+| `overbought` | market | Noul | whether it calls the stock overbought or stretched upward |
+| `oversold` | market | Noul | whether it calls the stock oversold or stretched downward |
+| `fundamentals_trend` | fundamentals | Score (5) | deteriorating sharply to improving strongly |
+| `valuation_stretch` | fundamentals | Score (5) | clearly cheap to stretched, with "fair, or not judged" in the middle |
+| `balance_sheet_risk` | fundamentals | Noul | whether it flags heavy debt, weak liquidity, cash burn or dilution |
+| `sentiment_tone` | sentiment | Score (5) | strongly bearish to strongly bullish |
+| `sentiment_extremity` | sentiment | Score (5) | quiet or evenly mixed to euphoria or panic, either direction |
+| `news_tone` | news | Score (5) | clearly bad to clearly good for the stock |
+| `catalyst_proximity` | news | Score (4) | no upcoming event named to an event due in the coming days |
+| `macro_headwind` | news | Noul | whether the macro or sector backdrop is described as a headwind |
+| `bull_bear_balance` | research debate | Score (5) | bear case much stronger to bull case much stronger, on the evidence cited |
+| `risk_debate_asymmetry` | risk debate | Score (5) | strongly toward caution to strongly toward taking the risk |
+| `conviction` | decision | Score (5) | very low (heavily hedged) to very high (clear-cut) |
+
+`catalyst_proximity` reads timing as the report words it. Jev is not given the
+analysis date, since it reads dates as text and cannot count from them.
+
+**Output:** the evaluation below, and `report_features.csv` in the run folder,
+with one row per decision: the ticker, the dates, the logged and the Portfolio
+Manager's rating, the alpha and every column. The CSV is there for a closer
+look, or for another model. This example is the synthetic data in
+`test_outcome_model.py`, where one column carries the outcome and the rating
+carries none. No real sweep has been scored yet.
+
+```
+Settled decisions: 64 over 16 analysis dates. Held out 2026-03-30 to 2026-04-20: 16 decisions. Trained on the 44 settled before 2026-03-30, of which 52% beat the benchmark.
+
+Log loss of P(beats the benchmark), lower is better (0.693 is a coin flip):
+- base rate: dev CV 0.687, held out 0.688
+- rating: dev CV 0.687, held out 0.688 (L2 0.3)
+- rating + Jev features: dev CV 0.324, held out 0.071 (L2 0.3); held-out alpha +2.09% (n=9) where it favours the stock vs -2.40% (n=7) elsewhere
+
+Questions, by how much dropping each one raises the dev CV log loss of the full model. Keep one only while this is above 0; a small gain is often noise:
+- signal: +0.3672 (keep)
+- noise: +0.0056 (keep)
+- flat: +0.0000 (flat: drop)
+
+Worst-predicted dev decisions, the cases to read when proposing new questions:
+- T32 2026-03-02 Buy: P(beats) 0.83, alpha -1.3%
+...
+```
+
+The pure-noise column there passes the keep rule by 0.006. With a few dozen
+decisions, a small gain is not evidence. A question should earn its place on the
+held-out dates and again on a later or wider sweep.
+
+**Refuses:** without the `jev` extra or `TYPESAFE_API_KEY`, or with
+`jev_enabled: False`, the command says what it needs and exits. A run that is
+too small exits before any request, with its counts: settled, pending, and
+settled without a saved state. When a request fails, the error is printed and
+the answers already received stay cached, so running the command again
+continues from there. The command warns when the cached answers come from more
+than one model.
+
+**Load:** 7 requests per decision the first time, so 700 for 100 decisions, and
+none after that. The live check below sent 21 requests in 3.0–3.7 s. Its
+documents are short; real reports are longer, and their token counts have not
+been measured. At $0.042 per million input tokens, even 20,000 tokens per
+decision costs under a tenth of a cent. The backtest's LLM runs cost far more
+than this step.
+
+**Live check (2026-09-23, `jev-1.13.0`, 3 runs):**
+[`scripts/jev_report_features_live.py`](../scripts/jev_report_features_live.py)
+holds one decision's seven documents written three ways: bullish (A), mixed
+(C) and bearish (B). Each is written to have a known answer per question. For
+example, A is a strong uptrend at RSI 77 that is called overbought, with a
+valuation called attractive, earnings due next week, and an emphatic Buy. B is a
+steep downtrend called oversold, with a stretched valuation, a heavy debt load,
+panic on social media, no upcoming event, and an Underweight called "a close
+call". C is range-bound, fairly valued and evenly argued.
+
+All 14 questions ordered A and B the expected way on every run. Most sat at or
+near the ends of the scale: `price_trend` 4.00 against 0.00, `overbought` 0.99
+against 0.02, `balance_sheet_risk` 0.02 against 0.98, `conviction` 4.00 against
+0.06–0.09. `valuation_stretch` placed A at 0.89–0.90 ("somewhat cheap", as
+written) and B at 4.00. The answers barely moved between runs: no expected
+level or probability changed by more than 0.05. This is far steadier than fit
+4's relation answers. The mixed run fell between A and B on 9 of the 10 Scores. The exception
+is `sentiment_extremity`, which has no direction, so the calm, evenly split
+run is the lowest (0.00), as its levels define. The spread columns were small
+on these clear-cut documents (mean standard deviation 0.00–0.17).
+
+This shows that each question reads what it asks about. It does not show that
+any column predicts alpha. The documents were written to be unambiguous, and
+real reports hedge. That question is for `tradingagents learn` on a real sweep.
+
+**Not built yet:**
+- A sweep large enough to learn from. It needs at least 40 settled decisions
+  over 6 dates to run at all, and far more to trust. The cookbook's dev set had
+  1,200 rows. Four tickers weekly for six months gives about 100 cells, each a
+  full pipeline run.
+- Proposing questions automatically. The command lists the worst-predicted
+  decisions, but reading their reports and adding questions to `QUESTIONS` is
+  done by hand. The cookbook's loop gives an LLM the 30 worst and 30 best
+  predicted cases, with each feature's importance, and asks it to add, revise or
+  drop questions. Automating that is the next step.
+- Using the signal. Nothing reads the model in an analysis run. Only once it
+  beats the rating on the held-out dates of a large sweep, and again on a later
+  one, should P(beats the benchmark) appear next to the rating.
+- More columns from code, at no Jev cost: the computed sentiment score from
+  fit 2, and the claim-check counts from fit 4.
+
+**Watch:** the cache key uses the configured model name. Pin `jev_model` to a
+versioned id before collecting answers you mean to compare, since an alias such
+as `jev-latest` moves. Each backtest cell is also one sampling of every LLM, and
+the text feeds are not archived, so re-running a cell gives different reports
+and different answers.

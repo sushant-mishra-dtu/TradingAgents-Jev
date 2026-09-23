@@ -1470,6 +1470,48 @@ def backtest(
 
 
 @app.command()
+def learn(
+    run_id: str = typer.Argument(
+        ..., help="The backtest to learn from: its folder name under <results>/backtest"
+    ),
+    holdout: float = typer.Option(
+        0.25, "--holdout", help="Share of the latest analysis dates held out for the final score"
+    ),
+):
+    """Test whether Jev judgments of the reports predict a backtest's outcomes."""
+    from rich.markup import escape
+
+    try:
+        run_dir = Path(DEFAULT_CONFIG["results_dir"]) / "backtest" / safe_ticker_component(run_id)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from None
+    if not (run_dir / "trading_memory.md").exists():
+        console.print(f"[red]No backtest log in {escape(str(run_dir))}; pass the run id of a "
+                      "backtest, the folder its log was written to.[/red]")
+        raise typer.Exit(code=1)
+    try:
+        from tradingagents.report_features import JevUnavailable, learn_from_run
+    except ImportError:
+        console.print(escape('Learning from reports needs the jev extra: pip install "tradingagents[jev]"'),
+                      style="red")
+        raise typer.Exit(code=1) from None
+
+    try:
+        result = learn_from_run(run_dir, holdout=holdout)
+    except (ValueError, JevUnavailable) as exc:  # too few decisions, a bad holdout, no Jev
+        console.print(escape(str(exc)), style="red")
+        raise typer.Exit(code=1) from None
+    console.print(result.evaluation.render(), markup=False)
+    console.print(f"\n{result.decisions.describe()}. Jev requests sent: {result.requests}; "
+                  f"the other answers came from {result.cache_path}.")
+    if len(result.models) > 1:
+        console.print(f"[yellow]The answers come from several models ({', '.join(sorted(result.models))}); "
+                      "pin jev_model and ask again before comparing questions.[/yellow]")
+    console.print(f"Feature table: {result.table_path}")
+
+
+@app.command()
 def ui(
     port: int = typer.Option(8501, "--port", help="Port to serve the UI on"),
     host: str = typer.Option("127.0.0.1", "--host", help="Address to bind; 0.0.0.0 exposes it on your network"),

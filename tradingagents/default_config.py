@@ -116,6 +116,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # uses it to check the claims in its Investment Thesis against the analyst
     # reports; jev_claim_check False turns that check off alone, since a
     # contradicted thesis sends the decision to REVIEW rather than a trade.
+    # `tradingagents learn` uses it to judge a finished backtest's reports.
     # jev_model None uses the SDK default (TYPESAFE_DEFAULT_MODEL, else
     # jev-latest); pin a versioned id such as "jev-1.13.0" once thresholds are
     # tuned against it.
