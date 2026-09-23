@@ -25,6 +25,7 @@ judgments at four points in the pipeline, and a browser UI.
 - Without the extra, without a key, or with `jev_enabled: False`, every stage runs as it did in 0.5.0. A failed Jev request falls back to the previous behaviour for that item, turn or check.
 - The sentiment judgments are saved with the report, and the run log records each debate's per-turn `new_argument` scores and the `stronger_side` probabilities, so the policies can be tuned.
 - The claim check always ends its block with the rating label.
+- A long debate is cut to its latest turns before a debate judgment is sent, so it stays under Jev's input limit (about 33K tokens). Before, a Deep run's Research Manager got no hint, because the request was rejected. The hint names a side only when Jev gives it at least 0.50, and otherwise says there was no clear winner.
 - Thresholds live in `SentimentPolicy` and `DebatePolicy`. See [docs/jev-use-cases.md](docs/jev-use-cases.md).
 
 ### Browser UI

@@ -258,8 +258,8 @@ model, using analyst-report agreement judgments from fits 2 and 3.
    and `tests/test_stocktwits_resilience.py`. Fixes untrusted social text in
    prompts and the LLM-chosen sentiment score.
 2. ~~**Fit 4**~~ (built, ahead of fit 3): claim verification on the final decision.
-3. ~~**Fit 3**~~ (built): debate convergence, a direct cost saving. No live
-   check yet.
+3. ~~**Fit 3**~~ (built): debate convergence, a direct cost saving. Live check
+   run 2026-09-24; next, measure how often a real debate stops early.
 4. **Fits 6–10** as needed.
 5. **Fit 5** (started): the features, the model and `tradingagents learn` are
    built. Next, run a backtest with enough settled decisions, then grow the
@@ -628,10 +628,23 @@ Tests: [`test_jev_debate.py`](../tests/test_jev_debate.py).
 4. When the investment debate ends, the Research Manager asks `stronger_side`
    over the bull and bear histories in one request. The answer is added to the
    prompt as a hint with all three probabilities, after the debate history. It is
-   marked as coming from a classifier that saw only the debate. The probabilities
-   are stored as `stronger_side` in the debate state.
+   marked as coming from a classifier that saw only the debate. It names a side
+   only when that side gets at least `side_lead_min` (0.50); below that it says
+   there was no clear winner. The probabilities are stored as `stronger_side` in
+   the debate state.
 5. The run log (`full_states_log_<date>.json`) records `turns`, `new_argument`,
    and `stronger_side` for each debate, for tuning `DebatePolicy`.
+
+**Input limit:** Jev rejects a request above about 33K input tokens with
+`400 max_tokens_exceeded`. For debate text that is about 110K characters
+(measured 2026-09-24). Deep debates pass it. In a real Deep run the bull and
+bear histories came to 135K characters, `stronger_side` failed, and the Research
+Manager got no hint. Every debate state is now capped at `MAX_STATE_CHARS`
+(80,000, in [`jev.py`](../tradingagents/agents/utils/jev.py)). The oldest whole
+turns are dropped first, and an `[Earlier turns omitted for length.]` line
+replaces them. `new_argument` gets whatever room the latest turn leaves. A point
+last made in a dropped turn then reads as new, which keeps the debate going, the
+safe direction. `stronger_side` gives each side half the budget.
 
 **When it saves calls:** early stopping needs at least three configured rounds,
 because round 1 is the openings and the last round ends the debate anyway. The
@@ -647,10 +660,41 @@ extra, every `new_argument` entry is `None`, the debates run their configured
 rounds, and the Research Manager's prompt is unchanged. A failed request is
 logged and treated the same way for that turn or hint.
 
-**To tune next:** `min_rounds` (2) and `new_argument_min` (0.30) are in
-`DebatePolicy`. The bar is low on purpose, because stopping too early costs the
-manager an argument, while continuing only costs one round of calls. The
-debate histories grow with the rounds. At Deep depth, check a live run for
-request failures or degraded answers on long states before relying on the
-hint. This change was built without a key or access to the Jev docs, so no live
-check has been run yet.
+**Live check (2026-09-24, `jev-1.13.0`, 3 runs, done twice):**
+[`scripts/jev_debate_live.py`](../scripts/jev_debate_live.py) asks about
+hand-written NVDA turns and debates, and with `--log` it replays a real run log.
+All 13 labelled cases passed on every run.
+- `new_argument`, judged against the round-1 openings: two rebuttals that
+  brought new evidence scored 0.97–0.98. A turn that restated the bear's case
+  and added one fact (the 10-year yield) scored 0.93–0.94. Two restatements and
+  a turn of pure rhetoric scored 0.04–0.09. No answer moved more than 0.02
+  between runs, so the 0.30 bar has a wide margin both ways.
+- Whole debates, through the real debater nodes, `judge_turns` and the routers,
+  with scripted replies and 3 configured rounds: when round 2 only repeated,
+  the investment debate stopped at 4 turns and the risk debate at 6. When round
+  2 brought new evidence, both ran all 3 rounds.
+- `stronger_side`: when only one side cited evidence, Jev gave that side 1.00.
+  When both did, the answer was close to a three-way split (bull 0.20–0.28,
+  bear 0.36–0.46, even 0.34–0.36). The hint read that as "judged the bear case
+  better supported", which is why `side_lead_min` was added.
+- Replay of a real Deep run (NVDA, 2026-09-23, 5 rounds, turns of 5.5K–17K
+  characters): every judged turn was asked again, and each score stayed within
+  0.04 of the logged one. That includes the three requests the cap now cuts.
+  Before the cap, `stronger_side` on the real 63K + 72K character histories
+  failed with `max_tokens_exceeded` 3 times out of 3. With the cap it sent
+  29K + 32K characters and answered bull 0.36–0.38, bear 0.37–0.39, even
+  0.23–0.26, so the hint names no side. The run's Research Manager chose
+  Overweight.
+
+**What the real run says about savings:** neither debate converged. The
+investment turns scored 0.79–0.93. The risk turns scored 0.62–0.96, except the
+Neutral Analyst's (0.25–0.55), which mostly weigh the other two. A long LLM turn
+nearly always adds some new detail, so a round rarely has every turn below
+0.30. Early stopping works when the turns do repeat, but with verbose models it
+may seldom fire. Measure the stop rate over a backtest before deciding whether
+it earns its requests.
+
+**To tune next:** `min_rounds` (2), `new_argument_min` (0.30) and
+`side_lead_min` (0.50) are in `DebatePolicy`. The bar is low on purpose, because
+stopping too early costs the manager an argument, while continuing only costs
+one round of calls.

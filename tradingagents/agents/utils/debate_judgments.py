@@ -8,29 +8,36 @@ whether the turn raised anything the debate had not already heard; the router
 the investment debate ends, Jev is asked whose case is better supported, and
 the Research Manager gets the answer as a hint, not a verdict.
 
-Jev only answers the two questions. Which turns are asked, the threshold, and
-the minimum number of rounds are ``DebatePolicy``, so a change to any of them is
+Jev only answers the two questions. Which turns are asked, the threshold, the
+minimum number of rounds, and the lead the hint needs before it names a side
+are ``DebatePolicy``, so a change to any of them is
 an edit here rather than a reworded question. The answers are kept in the debate
 state, one per turn, so the policy can be tuned without asking again.
 
 Both entry points return None when Jev is off or a request fails, and the
-debate then runs its configured rounds as before.
+debate then runs its configured rounds as before. A long debate is cut to its
+latest turns before it is sent, since Jev rejects a request past its input limit.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
 
-from tradingagents.agents.utils.jev import jev_client
+from tradingagents.agents.utils.jev import MAX_STATE_CHARS, jev_client
 
 logger = logging.getLogger(__name__)
 
 # The sides the investment debate can favour, in the order the hint lists them.
 SIDES = ("bull", "bear", "even")
 SIDE_LABELS = {"bull": "bull", "bear": "bear", "even": "evenly matched"}
+
+# Every debater starts its turn on a new line with its label ("Bull Analyst: ...").
+_TURN_START = re.compile(r"\n(?=(?:Bull|Bear|Aggressive|Conservative|Neutral) Analyst: )")
+OMITTED = "[Earlier turns omitted for length.]"
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +47,7 @@ SIDE_LABELS = {"bull": "bull", "bear": "bear", "even": "evenly matched"}
 
 @dataclass(frozen=True)
 class DebatePolicy:
-    """Every number the convergence rule reads.
+    """Every number the convergence rule and the Research Manager's hint read.
 
     Starting points, not values tuned for this domain: tune them on backtest
     outcomes (``tradingagents/backtest.py``). A debate never runs past its
@@ -53,6 +60,9 @@ class DebatePolicy:
     # A turn whose P(new argument) is below this adds nothing new. Stopping is
     # the costly mistake (the manager loses an argument), so the bar is low.
     new_argument_min: float = 0.30
+    # The Research Manager's hint names a side only when Jev gives it at least
+    # this probability; below it, the hint says there was no clear winner.
+    side_lead_min: float = 0.50
 
     def __post_init__(self):
         if self.min_rounds < 2:
@@ -142,14 +152,34 @@ def _questions() -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
+def latest_turns(text: str, budget: int) -> str:
+    """The end of ``text`` that fits in ``budget`` characters, starting at a turn.
+
+    Returns ``text`` unchanged when it fits. Otherwise the oldest turns go, and
+    the result opens with ``OMITTED``; a single turn longer than the budget is
+    cut from its start.
+    """
+    text = text.strip()
+    if len(text) <= budget:
+        return text
+    keep = max(budget - len(OMITTED) - 1, 0)
+    # One character more than is kept, so a turn that starts right at the cut stays.
+    tail = text[len(text) - keep - 1:]
+    start = _TURN_START.search(tail)
+    return f"{OMITTED}\n{tail[start.end() if start else 1:]}".strip()
+
+
 def new_argument(prior_turns: str, latest_turn: str) -> float | None:
     """P(``latest_turn`` raises something not in ``prior_turns``), or None.
 
     None means Jev is off or the request failed; the caller keeps debating.
+    A long debate is judged against its latest turns only. A point last made
+    in a dropped turn then reads as new, which keeps the debate going.
     """
     client = jev_client()
     if client is None:
         return None
+    prior_turns = latest_turns(prior_turns, MAX_STATE_CHARS - len(latest_turn))
     try:
         with client:
             response = client.system_one(
@@ -166,7 +196,8 @@ def stronger_side(bull_case: str, bear_case: str) -> dict[str, float] | None:
     """Jev's probability for each of ``SIDES``, or None.
 
     None when either case is empty, Jev is off, or the request failed; the
-    Research Manager then works without a hint.
+    Research Manager then works without a hint. In a long debate each side is
+    judged on its latest turns, half the state budget each.
     """
     if not (bull_case.strip() and bear_case.strip()):
         return None
@@ -176,7 +207,10 @@ def stronger_side(bull_case: str, bear_case: str) -> dict[str, float] | None:
     try:
         with client:
             response = client.system_one(
-                state={"bull_case": bull_case.strip(), "bear_case": bear_case.strip()},
+                state={
+                    "bull_case": latest_turns(bull_case, MAX_STATE_CHARS // 2),
+                    "bear_case": latest_turns(bear_case, MAX_STATE_CHARS // 2),
+                },
                 questions=_questions()["sides"],
             )
         answer = response.answers["stronger_side"]
@@ -186,14 +220,15 @@ def stronger_side(bull_case: str, bear_case: str) -> dict[str, float] | None:
         return None
 
 
-def render_side_hint(probabilities: Mapping[str, float]) -> str:
+def render_side_hint(probabilities: Mapping[str, float], policy: DebatePolicy = DEFAULT_POLICY) -> str:
     """The Research Manager's prompt block for a ``stronger_side`` answer."""
     top = max(SIDES, key=lambda side: probabilities.get(side, 0.0))
-    verdict = (
-        "judged the two cases evenly matched"
-        if top == "even"
-        else f"judged the {top} case better supported"
-    )
+    if top == "even":
+        verdict = "judged the two cases evenly matched"
+    elif probabilities.get(top, 0.0) < policy.side_lead_min:
+        verdict = "found no clear winner"
+    else:
+        verdict = f"judged the {top} case better supported"
     spread = " · ".join(f"{SIDE_LABELS[s]} {probabilities.get(s, 0.0):.0%}" for s in SIDES)
     return (
         "**Independent evidence check (a hint, not a verdict):** a separate classifier "

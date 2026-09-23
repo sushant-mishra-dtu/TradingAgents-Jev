@@ -301,6 +301,62 @@ def test_a_failed_check_keeps_the_debate_going(monkeypatch, caplog):
 
 
 # ---------------------------------------------------------------------------
+# Long debates fit Jev's input limit
+# ---------------------------------------------------------------------------
+
+_TURNS = ["Bull Analyst: " + "a" * 50, "Bear Analyst: " + "b" * 50, "Bull Analyst: " + "c" * 50]
+_LONG = "\n" + "\n".join(_TURNS)  # as the debaters build ``history``
+
+
+@pytest.mark.unit
+def test_a_debate_that_fits_is_sent_whole():
+    assert dj.latest_turns(_LONG, len(_LONG)) == _LONG.strip()
+
+
+@pytest.mark.unit
+def test_a_long_debate_keeps_its_latest_whole_turns():
+    last_two = "\n".join(_TURNS[1:])
+    budget = len(dj.OMITTED) + 1 + len(last_two)
+    # Exactly room for the last two turns: the turn starting at the cut is kept.
+    assert dj.latest_turns(_LONG, budget) == f"{dj.OMITTED}\n{last_two}"
+    # One character less: the cut falls inside it, and it goes whole.
+    assert dj.latest_turns(_LONG, budget - 1) == f"{dj.OMITTED}\n{_TURNS[2]}"
+
+
+@pytest.mark.unit
+def test_a_turn_longer_than_the_budget_is_cut_from_its_start():
+    trimmed = dj.latest_turns(_LONG, len(dj.OMITTED) + 21)
+    assert trimmed == f"{dj.OMITTED}\n{'c' * 20}"
+
+
+@pytest.mark.unit
+def test_a_long_debate_is_judged_against_its_latest_turns(fake_jev, monkeypatch):
+    monkeypatch.setattr(dj, "MAX_STATE_CHARS", 230)  # each turn is 74 characters
+    _run_investment_debate(
+        ConditionalLogic(max_debate_rounds=3),
+        ["b" * 60, "b" * 60], ["r" * 60, "r" * 60],
+    )
+    (first, _), (second, _) = fake_jev.requests
+    assert first["prior_turns"] == f"Bull Analyst: {'b' * 60}\nBear Analyst: {'r' * 60}"
+    # Three turns before the fourth pass the budget; the openings go.
+    assert second["prior_turns"] == f"{dj.OMITTED}\nBull Analyst: {'b' * 60}"
+    assert len(second["prior_turns"]) + len(second["latest_turn"]) <= 230
+
+
+@pytest.mark.unit
+def test_each_side_gets_half_the_budget(fake_jev, monkeypatch):
+    monkeypatch.setattr(dj, "MAX_STATE_CHARS", 200)
+    bull = "\n" + "\n".join(f"Bull Analyst: point {i} " + "x" * 30 for i in range(5))
+    bear = "\n" + "\n".join(f"Bear Analyst: point {i} " + "y" * 30 for i in range(5))
+    assert dj.stronger_side(bull, bear) is not None
+    [(state, _)] = fake_jev.requests
+    for side in ("bull_case", "bear_case"):
+        assert state[side].startswith(dj.OMITTED)
+        assert len(state[side]) <= 100
+        assert state[side].endswith("point 4 " + ("x" if side == "bull_case" else "y") * 30)
+
+
+# ---------------------------------------------------------------------------
 # The Research Manager's hint
 # ---------------------------------------------------------------------------
 
@@ -359,6 +415,14 @@ def test_research_manager_hint_reads_even_when_neither_side_leads(fake_jev):
     fake_jev.sides = {"bull": 0.2, "bear": 0.3, "even": 0.5}
     prompt, _ = _run_rm(_rm_state())
     assert "judged the two cases evenly matched" in prompt
+
+
+@pytest.mark.unit
+def test_research_manager_hint_names_no_side_on_a_narrow_lead(fake_jev):
+    # A live answer on two well-evidenced cases (2026-09-24): a lead of a few points.
+    fake_jev.sides = {"bull": 0.27, "bear": 0.39, "even": 0.34}
+    prompt, _ = _run_rm(_rm_state())
+    assert "found no clear winner (bull 27% · bear 39% · evenly matched 34%)" in prompt
 
 
 @pytest.mark.unit

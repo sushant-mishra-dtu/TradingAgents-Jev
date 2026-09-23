@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 # SDK retries a 429 with backoff, so this bounds latency, not correctness.
 MAX_CONCURRENT_REQUESTS = 8
 
+# Characters of state a request may carry. The service rejects a request past
+# about 33K input tokens (400 max_tokens_exceeded; measured 2026-09-24 on
+# jev-latest, where debate text ran about 3.3 characters a token), so this leaves
+# room for text that tokenizes more densely.
+MAX_STATE_CHARS = 80_000
+
 
 def jev_client() -> Any | None:
     """A ``TypeSafeClient`` for the configured model, or None when Jev is off.
