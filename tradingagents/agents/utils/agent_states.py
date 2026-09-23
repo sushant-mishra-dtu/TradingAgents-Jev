@@ -16,6 +16,12 @@ class InvestDebateState(TypedDict):
     current_response: Annotated[str, "Latest response"]  # Last response
     judge_decision: Annotated[str, "Final judge decision"]  # Last response
     count: Annotated[int, "Length of the current conversation"]  # Conversation length
+    new_argument: Annotated[
+        list[float | None], "Per turn: P(it raised something new), None when not judged"
+    ]
+    stronger_side: Annotated[
+        dict[str, float], "Jev's P(bull/bear/even is better supported); empty without Jev"
+    ]
 
 
 # Risk management team state
@@ -42,6 +48,9 @@ class RiskDebateState(TypedDict):
     ]  # Last response
     judge_decision: Annotated[str, "Judge's decision"]
     count: Annotated[int, "Length of the current conversation"]  # Conversation length
+    new_argument: Annotated[
+        list[float | None], "Per turn: P(it raised something new), None when not judged"
+    ]
 
 
 class AgentState(MessagesState):

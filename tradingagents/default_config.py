@@ -112,7 +112,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # TypeSafe Jev typed judgments (pip install "tradingagents[jev]"). Used only
     # when TYPESAFE_API_KEY is set; set False to keep the pre-Jev behaviour even
     # then. The Sentiment Analyst uses it to filter news and social items and to
-    # compute the sentiment score from per-item stances. The Portfolio Manager
+    # compute the sentiment score from per-item stances; the debates use it to
+    # stop once a round adds nothing new (max_*_rounds stays the upper bound)
+    # and to brief the Research Manager on whose case held up. The Portfolio Manager
     # uses it to check the claims in its Investment Thesis against the analyst
     # reports; jev_claim_check False turns that check off alone, since a
     # contradicted thesis sends the decision to REVIEW rather than a trade.

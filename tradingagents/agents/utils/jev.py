@@ -17,6 +17,7 @@ import logging
 import os
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 from typing import Any
 
 from tradingagents.dataflows.config import get_config
@@ -41,16 +42,22 @@ def jev_client() -> Any | None:
     try:
         from typesafe_sdk import TypeSafeClient, TypeSafeError
     except ImportError:
-        logger.warning(
-            "TYPESAFE_API_KEY is set but typesafe-sdk is not installed; running without "
-            'Jev. Install it with: pip install "tradingagents[jev]"'
-        )
+        _warn_sdk_missing()
         return None
     try:
         return TypeSafeClient(model=config.get("jev_model") or None)
     except TypeSafeError as exc:  # a malformed key or timeout, caught before any request
         logger.warning("Could not create the TypeSafe client (%s); running without Jev", exc)
         return None
+
+
+@cache
+def _warn_sdk_missing() -> None:
+    # Once per process: every judged debate turn asks for a client.
+    logger.warning(
+        "TYPESAFE_API_KEY is set but typesafe-sdk is not installed; running without "
+        'Jev. Install it with: pip install "tradingagents[jev]"'
+    )
 
 
 def ask_each(client: Any, states: Sequence[Any], questions: Mapping[str, Any]) -> list[Any]:
