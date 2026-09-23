@@ -27,7 +27,7 @@
 
 ---
 
-> **TradingAgents-Jev** is a fork of [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (Apache 2.0). It adds [TypeSafe Jev](https://docs.typesafe.ai) per-item judgments to the Sentiment Analyst and a browser UI; see [TypeSafe Jev (optional)](#typesafe-jev-optional) and [Browser UI](#browser-ui). All credit for the underlying framework goes to the original authors.
+> **TradingAgents-Jev** is a fork of [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) (Apache 2.0). It adds [TypeSafe Jev](https://docs.typesafe.ai) judgments to the Sentiment Analyst and the debates, and a browser UI; see [TypeSafe Jev (optional)](#typesafe-jev-optional) and [Browser UI](#browser-ui). All credit for the underlying framework goes to the original authors.
 
 # TradingAgents: Multi-Agents LLM Financial Trading Framework
 
@@ -207,7 +207,7 @@ Model settings live in the sidebar and share the CLI's remembered answers and `.
 
 ### TypeSafe Jev (optional)
 
-With `pip install ".[jev]"` and `TYPESAFE_API_KEY` set, the Sentiment Analyst first judges each news article and social post with [TypeSafe Jev](https://docs.typesafe.ai). It drops items about other companies, repeats, and posts carrying instructions aimed at an AI system, then computes the sentiment band, score and confidence from per-item stances; the LLM writes only the narrative. Set `TRADINGAGENTS_JEV_ENABLED=false` to keep the previous behaviour. Details: [docs/jev-use-cases.md](docs/jev-use-cases.md).
+With `pip install ".[jev]"` and `TYPESAFE_API_KEY` set, the Sentiment Analyst first judges each news article and social post with [TypeSafe Jev](https://docs.typesafe.ai). It drops items about other companies, repeats, and posts carrying instructions aimed at an AI system, then computes the sentiment band, score and confidence from per-item stances; the LLM writes only the narrative. The bull/bear and risk debates end early once a full round adds no new argument (never before round 2 or past the configured rounds, so this applies from three rounds up), and the Research Manager gets Jev's read of whose case is better supported as a hint. Set `TRADINGAGENTS_JEV_ENABLED=false` to keep the previous behaviour. Details: [docs/jev-use-cases.md](docs/jev-use-cases.md).
 
 ### Markets and tickers
 

@@ -96,7 +96,8 @@ low, report the broader group instead of the specific type.
 ### 3. Stop debates when they converge
 
 **Goal:** the bull/bear and risk debates run a fixed number of rounds today.
-End them early when a turn adds nothing new, which saves deep-model calls.
+End them early when a turn adds nothing new. Each skipped turn saves one
+quick-model call whose prompt carries every analyst report.
 
 **Jev questions (after each turn):**
 
@@ -111,6 +112,8 @@ below a threshold; never exceed `max_debate_rounds` / `max_risk_discuss_rounds`.
 
 **Where:** `should_continue_debate` and `should_continue_risk_analysis` in
 [`conditional_logic.py`](../tradingagents/graph/conditional_logic.py).
+
+**Status:** built. See [Fit 3 as built](#fit-3-as-built).
 
 **Jev sources:** [Intent Routing](https://docs.typesafe.ai/patterns/intent-routing.md),
 [Confidence-Gated Routing](https://docs.typesafe.ai/patterns/confidence-routing.md).
@@ -230,7 +233,7 @@ model, using analyst-report agreement judgments from fits 2 and 3.
    item, isolated to one agent, testable with `tests/test_social_lookahead.py`
    and `tests/test_stocktwits_resilience.py`. Fixes untrusted social text in
    prompts and the LLM-chosen sentiment score.
-2. **Fit 3**: debate convergence, a direct cost saving.
+2. ~~**Fit 3**~~ (built): debate convergence, a direct cost saving.
 3. **Fit 4**: claim verification on the final decision.
 4. **Fits 6–10** as needed.
 5. **Fit 5** once the backtest has enough resolved decisions.
@@ -272,3 +275,55 @@ dropped; its stance of −0.71 would otherwise have pulled the score bearish.
 cut-offs are all in `SentimentPolicy`. They are cookbook starting points, not
 values fitted to this domain. Once backtest decisions resolve, tune them
 against alpha, then pin `jev_model` to the versioned id they were tuned on.
+
+## Fit 3 as built
+
+**Code:** [`debate_judgments.py`](../tradingagents/agents/utils/debate_judgments.py)
+(questions, `DebatePolicy`, the convergence rule, the Research Manager's hint),
+`judge_turns` and the two debate routers in
+[`conditional_logic.py`](../tradingagents/graph/conditional_logic.py), the
+wrapped debater nodes in [`setup.py`](../tradingagents/graph/setup.py), and the
+hint in [`research_manager.py`](../tradingagents/agents/managers/research_manager.py).
+Tests: [`test_jev_debate.py`](../tests/test_jev_debate.py).
+
+**Flow per debate:**
+1. Each debater node is wrapped. After its turn, the wrapper asks `new_argument`
+   in one request. The state is the debate so far (`prior_turns`) and the new turn
+   (`latest_turn`). The answer is appended to the debate state's `new_argument`
+   list, one entry per turn.
+2. Only turns whose answer could end the debate are asked about. That excludes
+   round 1, which holds every side's opening, and the last configured round,
+   which ends the debate anyway. Every other turn records `None`.
+3. At the end of each round from round 2 on, the router stops the debate when
+   every turn in that round scored below 0.30. A turn with a `None` answer keeps
+   the debate going. The debate still never runs past its configured rounds, and
+   it stops only at a round boundary, so every side gets the same number of turns.
+4. When the investment debate ends, the Research Manager asks `stronger_side`
+   over the bull and bear histories in one request. The answer is added to the
+   prompt as a hint with all three probabilities, after the debate history. It is
+   marked as coming from a classifier that saw only the debate. The probabilities
+   are stored as `stronger_side` in the debate state.
+5. The run log (`full_states_log_<date>.json`) records `turns`, `new_argument`,
+   and `stronger_side` for each debate, for tuning `DebatePolicy`.
+
+**When it saves calls:** early stopping needs at least three configured rounds,
+because round 1 is the openings and the last round ends the debate anyway. The
+default (`max_debate_rounds: 1`) and the Shallow depth never stop early. At Medium
+depth (3 rounds), a converged investment debate saves up to one round (two
+calls) at the cost of two Jev requests, and a converged risk debate saves up to
+one round (three calls) at the cost of three. At Deep depth (5 rounds), the savings are up to three
+rounds per debate. With Jev on, every run also sends one `stronger_side`
+request.
+
+**Degrades:** with no `TYPESAFE_API_KEY`, `jev_enabled: False`, or no `jev`
+extra, every `new_argument` entry is `None`, the debates run their configured
+rounds, and the Research Manager's prompt is unchanged. A failed request is
+logged and treated the same way for that turn or hint.
+
+**To tune next:** `min_rounds` (2) and `new_argument_min` (0.30) are in
+`DebatePolicy`. The bar is low on purpose, because stopping too early costs the
+manager an argument, while continuing only costs one round of calls. The
+debate histories grow with the rounds. At Deep depth, check a live run for
+request failures or degraded answers on long states before relying on the
+hint. This change was built without a key or access to the Jev docs, so no live
+check has been run yet.

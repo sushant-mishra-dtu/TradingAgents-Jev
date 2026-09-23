@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.debate_judgments import render_side_hint, stronger_side
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
@@ -22,6 +23,14 @@ def create_research_manager(llm):
         history = state["investment_debate_state"].get("history", "")
 
         investment_debate_state = state["investment_debate_state"]
+
+        # With Jev, an independent read of whose case is better supported
+        # (docs/jev-use-cases.md, fit 3); without it the prompt is unchanged.
+        sides = stronger_side(
+            investment_debate_state.get("bull_history", ""),
+            investment_debate_state.get("bear_history", ""),
+        )
+        side_hint = f"\n\n{render_side_hint(sides)}" if sides else ""
 
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
@@ -41,7 +50,7 @@ The debate always contains conflicting arguments; deciding which side is stronge
 ---
 
 **Debate History:**
-{history}
+{history}{side_hint}
 
 ## Output
 
@@ -68,6 +77,8 @@ Write these sections, in this order, starting with the recommendation on its own
             "bull_history": investment_debate_state.get("bull_history", ""),
             "current_response": investment_plan,
             "count": investment_debate_state["count"],
+            "new_argument": investment_debate_state.get("new_argument") or [],
+            "stronger_side": sides or {},
         }
 
         return {

@@ -643,6 +643,10 @@ class TradingAgentsGraph:
                 "judge_decision": final_state["investment_debate_state"][
                     "judge_decision"
                 ],
+                # Jev convergence answers (fit 3), kept for tuning DebatePolicy.
+                "turns": final_state["investment_debate_state"].get("count", 0),
+                "new_argument": final_state["investment_debate_state"].get("new_argument", []),
+                "stronger_side": final_state["investment_debate_state"].get("stronger_side", {}),
             },
             "trader_investment_decision": final_state["trader_investment_plan"],
             "risk_debate_state": {
@@ -651,6 +655,8 @@ class TradingAgentsGraph:
                 "neutral_history": final_state["risk_debate_state"]["neutral_history"],
                 "history": final_state["risk_debate_state"]["history"],
                 "judge_decision": final_state["risk_debate_state"]["judge_decision"],
+                "turns": final_state["risk_debate_state"].get("count", 0),
+                "new_argument": final_state["risk_debate_state"].get("new_argument", []),
             },
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],

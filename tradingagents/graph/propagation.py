@@ -48,6 +48,8 @@ class Propagator:
                     "current_response": "",
                     "judge_decision": "",
                     "count": 0,
+                    "new_argument": [],
+                    "stronger_side": {},
                 }
             ),
             "risk_debate_state": RiskDebateState(
@@ -62,6 +64,7 @@ class Propagator:
                     "current_neutral_response": "",
                     "judge_decision": "",
                     "count": 0,
+                    "new_argument": [],
                 }
             ),
             "market_report": "",

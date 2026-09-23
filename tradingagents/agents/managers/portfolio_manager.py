@@ -97,6 +97,7 @@ Write these sections, in this order, starting with the rating on its own line:
             "current_conservative_response": risk_debate_state["current_conservative_response"],
             "current_neutral_response": risk_debate_state["current_neutral_response"],
             "count": risk_debate_state["count"],
+            "new_argument": risk_debate_state.get("new_argument") or [],
         }
 
         return {

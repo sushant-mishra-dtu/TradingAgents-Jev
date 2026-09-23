@@ -79,16 +79,20 @@ class GraphSetup:
             "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
         }
 
+        # Debaters record, per turn, whether they added anything new, so the
+        # routers can end a converged debate early (docs/jev-use-cases.md, fit 3).
+        judge_turns = self.conditional_logic.judge_turns
+
         # Create researcher and manager nodes
-        bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
-        bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
+        bull_researcher_node = judge_turns(create_bull_researcher(self.quick_thinking_llm), "investment")
+        bear_researcher_node = judge_turns(create_bear_researcher(self.quick_thinking_llm), "investment")
         research_manager_node = create_research_manager(self.deep_thinking_llm)
         trader_node = create_trader(self.quick_thinking_llm)
 
         # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
+        aggressive_analyst = judge_turns(create_aggressive_debator(self.quick_thinking_llm), "risk")
+        neutral_analyst = judge_turns(create_neutral_debator(self.quick_thinking_llm), "risk")
+        conservative_analyst = judge_turns(create_conservative_debator(self.quick_thinking_llm), "risk")
         portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
 
         # Create workflow
