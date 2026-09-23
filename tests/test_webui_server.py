@@ -202,3 +202,38 @@ def test_backtest_requests_validate_the_grid(base):
         "analysts": ["market"], "settings": SETTINGS})
     assert status == 400 and "before it starts" in body["error"]
     assert call(base, "/api/backtests") == (200, {"runs": [], "jobs": []})
+
+
+def test_tickers_can_be_found_by_company_name(base, monkeypatch):
+    from cli.webui import ticker_search
+
+    monkeypatch.setattr(ticker_search, "_CACHE", {})
+    seen = []
+
+    def fake_yahoo(query, limit):
+        seen.append(query)
+        return [{"symbol": "RELIANCE.NS", "name": "Reliance Industries Limited",
+                 "exchange": "NSE", "kind": "Stock"}]
+
+    monkeypatch.setattr(ticker_search, "_search_yahoo", fake_yahoo)
+    status, body = call(base, "/api/tickers?q=reliance%20%20industries")
+    assert status == 200 and body["source"] == "yahoo"
+    assert body["results"][0]["symbol"] == "RELIANCE.NS"
+    assert seen == ["reliance industries"]
+    assert call(base, "/api/tickers?q=")[1] == {"results": [], "source": "offline"}
+
+
+def test_ticker_search_falls_back_to_the_built_in_list(base, monkeypatch):
+    from cli.webui import ticker_search
+
+    def offline(query, limit):
+        raise OSError("no network")
+
+    monkeypatch.setattr(ticker_search, "_CACHE", {})
+    monkeypatch.setattr(ticker_search, "_search_yahoo", offline)
+    status, body = call(base, "/api/tickers?q=tencent")
+    assert status == 200 and body["source"] == "offline"
+    assert [r["symbol"] for r in body["results"]] == ["0700.HK"]
+    symbols = [r["symbol"] for r in ticker_search.search_local("apple")]
+    assert symbols[0] == "AAPL"
+    assert ticker_search.search_local("NVDA")[0]["symbol"] == "NVDA"

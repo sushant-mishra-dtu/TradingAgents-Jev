@@ -9,10 +9,12 @@ does not lose it.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
 import traceback
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +58,27 @@ _SECTION_RE = re.compile(r"^## ((?:I|II|III|IV|V)\. .+)$", re.MULTILINE)
 
 class _Cancelled(Exception):
     pass
+
+
+# The analysis whose graph is running in this context. LangGraph runs nodes on
+# pool threads but copies the context into them, so this reaches the LLM calls.
+_current_job: ContextVar[AnalysisJob | None] = ContextVar("webui_analysis_job", default=None)
+
+
+class _JobLogHandler(logging.Handler):
+    """Puts LLM-client warnings (a provider retry) in the run's activity log.
+
+    A transient-error retry can back off for minutes; without this the page
+    would show a run that has silently stopped moving.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        job = _current_job.get()
+        if job is not None:
+            job._log(record.getMessage())
+
+
+logging.getLogger("tradingagents.llm_clients").addHandler(_JobLogHandler(logging.WARNING))
 
 
 @dataclass
@@ -137,6 +160,7 @@ class AnalysisJob:
         from tradingagents.graph.trading_graph import TradingAgentsGraph
 
         graph = None
+        _current_job.set(self)
         try:
             self._log(f"Analyzing {self.ticker} on {self.trade_date} with: {', '.join(self.analysts)}")
             graph = TradingAgentsGraph(

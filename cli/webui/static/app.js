@@ -354,6 +354,101 @@ function pageHead(title, sub, extra = '') {
   return `<header class="page-head"><div><h1 class="page-title">${title}</h1>${sub ? `<p class="page-sub">${sub}</p>` : ''}</div>${DEMO ? '<span class="pill pill-dashed">Sample data</span>' : extra}</header>`;
 }
 
+/**
+ * Turn a ticker input into a combobox that searches by symbol or company name.
+ * `multi` completes the last entry of a comma-separated list. Picking writes the
+ * symbol into the input and fires `input`, so the page's own listeners see it.
+ */
+function tickerSearch(input, { multi = false } = {}) {
+  const list = document.createElement('ul');
+  list.id = input.id + '-list';
+  list.className = 'combo-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Matching tickers');
+  list.hidden = true;
+  input.insertAdjacentElement('afterend', list);
+  input.parentElement.classList.add('combo');
+  Object.entries({ role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': list.id })
+    .forEach(([k, v]) => input.setAttribute(k, v));
+  let results = [], active = -1, timer = null, seq = 0, note = '', picking = false;
+
+  const term = () => (multi ? input.value.split(',').pop() : input.value).trim();
+  const close = () => {
+    list.hidden = true; results = []; active = -1; note = '';
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  };
+  const render = () => {
+    if (!results.length && !note) return close();
+    list.innerHTML = results.map((r, i) => `<li id="${list.id}-${i}" role="option" class="combo-opt" data-i="${i}" aria-selected="${attr(i === active)}">
+        <span class="mono combo-sym">${esc(r.symbol)}</span>
+        <span class="combo-name">${esc(r.name)}</span>
+        <span class="combo-meta">${esc([r.exchange, r.kind].filter(Boolean).join(' · '))}</span></li>`).join('')
+      + (note ? `<li class="combo-note" role="presentation">${esc(note)}</li>` : '');
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    if (active >= 0) {
+      input.setAttribute('aria-activedescendant', `${list.id}-${active}`);
+      $(`#${list.id}-${active}`).scrollIntoView({ block: 'nearest' });
+    } else input.removeAttribute('aria-activedescendant');
+  };
+  const pick = (r) => {
+    if (multi) {
+      const parts = input.value.split(',').map((t) => t.trim()).filter(Boolean);
+      parts.pop();
+      input.value = [...parts, r.symbol].join(',') + ',';
+    } else input.value = r.symbol;
+    close();
+    picking = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    picking = false;
+  };
+  const search = async () => {
+    const q = term();
+    if (!q || DEMO) return close();
+    const mine = ++seq;
+    try {
+      const data = await api('/tickers?q=' + encodeURIComponent(q));
+      if (mine !== seq || document.activeElement !== input) return;
+      results = data.results;
+      // Highlight the typed symbol when it is listed, else the best match, so Enter does the obvious thing.
+      const exact = results.findIndex((r) => r.symbol.toLowerCase() === q.toLowerCase());
+      active = results.length ? Math.max(exact, 0) : -1;
+      note = !results.length ? `No matches for “${q}”.`
+        : data.source === 'offline' ? 'Offline: showing well-known tickers only.' : '';
+      render();
+    } catch (e) { if (mine === seq) close(); }
+  };
+
+  input.addEventListener('input', () => {
+    if (picking) return;
+    clearTimeout(timer);
+    if (!term()) { seq++; return close(); }
+    timer = setTimeout(search, 180);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden || !results.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      active = (active + (e.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length;
+      render();
+    } else if (e.key === 'Enter' && active >= 0) {
+      e.preventDefault();
+      pick(results[active]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
+  });
+  input.addEventListener('blur', () => { seq++; clearTimeout(timer); close(); });
+  // mousedown, not click: it lands before the input's blur closes the list.
+  list.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const o = e.target.closest('[data-i]');
+    if (o) pick(results[+o.dataset.i]);
+  });
+}
+
 function ratingPill(rating) {
   const tone = TONE[rating];
   const cls = tone === 'pos' ? 'pill-pos' : tone === 'neg' ? 'pill-neg' : 'pill-plain';
@@ -472,14 +567,14 @@ PAGES['/analyze'] = {
       <form class="card run-form" id="run-form" aria-labelledby="run-h" novalidate>
         <h2 id="run-h" class="sr">New analysis</h2>
         <div class="top">
-          <div class="field" style="width: 180px;"><label for="f-ticker">Ticker</label>
-            <input id="f-ticker" class="input mono ticker" value="${esc(f.ticker)}" aria-describedby="f-ticker-hint" autocomplete="off" spellcheck="false" required></div>
+          <div class="field" style="width: 220px;"><label for="f-ticker">Ticker or company</label>
+            <input id="f-ticker" class="input mono ticker" value="${esc(f.ticker)}" placeholder="AAPL or Apple" aria-describedby="f-ticker-hint" autocomplete="off" spellcheck="false" required></div>
           <div class="field" style="width: 180px;"><label for="f-date">Analysis date</label>
             <input id="f-date" class="input" type="date" value="${esc(f.date)}" max="${OPTIONS.today}" required></div>
           <fieldset class="grow" style="flex: 1 1 360px;"><legend class="legend">Analysts</legend>
             <div class="chips" id="f-analysts"></div></fieldset>
         </div>
-        <p id="f-ticker-hint" class="hint" style="margin-top: -6px;">Add the exchange suffix when needed: SPY, 0700.HK, RELIANCE.NS, BTC-USD. Crypto skips the Fundamentals analyst.</p>
+        <p id="f-ticker-hint" class="hint" style="margin-top: -6px;">Type a symbol or a company name (Apple, Reliance Industries, Tencent) and pick a match; it adds the exchange suffix for you. Crypto skips the Fundamentals analyst.</p>
         <div class="foot">
           <input id="f-portfolio" type="file" accept=".json,application/json" class="sr">
           <label for="f-portfolio" class="btn b" title="${esc(OPTIONS.portfolioHelp)}">${I.upload}<span>Portfolio JSON (optional)</span></label>
@@ -492,6 +587,7 @@ PAGES['/analyze'] = {
       </div>`;
     this.renderAnalysts();
     this.renderPortfolio();
+    tickerSearch($('#f-ticker'));
     const form = $('#run-form');
     form.addEventListener('input', (e) => {
       if (e.target.id === 'f-ticker') f.ticker = e.target.value;
@@ -1048,7 +1144,7 @@ PAGES['/backtest'] = {
       <form class="card run-form" id="bt-form" aria-labelledby="bt-h" novalidate>
         <h2 id="bt-h" class="sr">New backtest</h2>
         <div class="bt-grid">
-          <div class="field"><label for="b-tickers">Tickers</label><input id="b-tickers" class="input mono" data-bt="tickers" value="${esc(f.tickers)}" aria-describedby="b-tickers-hint" spellcheck="false" autocomplete="off"><span id="b-tickers-hint" class="faint" style="font-size: 12px;">Comma-separated</span></div>
+          <div class="field"><label for="b-tickers">Tickers</label><input id="b-tickers" class="input mono" data-bt="tickers" value="${esc(f.tickers)}" aria-describedby="b-tickers-hint" spellcheck="false" autocomplete="off"><span id="b-tickers-hint" class="faint" style="font-size: 12px;">Comma-separated symbols or company names</span></div>
           <div class="field"><label for="b-from">From</label><input id="b-from" class="input" type="date" data-bt="from" value="${esc(f.from)}" max="${OPTIONS.today}"></div>
           <div class="field"><label for="b-to">To</label><input id="b-to" class="input" type="date" data-bt="to" value="${esc(f.to)}" max="${OPTIONS.today}"></div>
           <div class="field"><label for="b-every">Every n days</label><input id="b-every" class="input mono" type="number" min="1" data-bt="every" value="${esc(f.every)}"></div>
@@ -1070,6 +1166,7 @@ PAGES['/backtest'] = {
       <div id="bt-jobs" class="stack" style="gap: 12px;"></div>
       <section id="bt-results" aria-labelledby="res-h" class="stack" style="gap: 18px;"></section></div>`;
     this.renderControls();
+    tickerSearch($('#b-tickers'), { multi: true });
     const form = $('#bt-form');
     form.addEventListener('input', (e) => {
       const k = e.target.dataset.bt;

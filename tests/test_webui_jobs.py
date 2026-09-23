@@ -156,3 +156,18 @@ def test_settled_decisions_read_as_fractions(tmp_path):
     assert row["status"] == "settled"
     assert row["return"] == pytest.approx(0.042)
     assert row["alpha"] == pytest.approx(-0.013)
+
+
+def test_analysis_job_shows_provider_retries(config, monkeypatch):
+    from tradingagents.llm_clients import openai_client
+
+    stream = FakeGraph.stream
+
+    def retrying_stream(self, state, **args):
+        openai_client.logger.warning("glm: transient provider error; retrying in 10s")
+        yield from stream(self, state, **args)
+
+    monkeypatch.setattr(FakeGraph, "stream", retrying_stream)
+    job = jobs.AnalysisJob("NVDA", "2026-09-01", "stock", ["market"], config).start()
+    _finish(job)
+    assert any("retrying in 10s" in text for _, _, text in job.snapshot()["messages"])

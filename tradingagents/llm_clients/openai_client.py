@@ -1,9 +1,12 @@
+import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+import openai
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
@@ -11,6 +14,20 @@ from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
+
+logger = logging.getLogger(__name__)
+
+# The SDK's own retries (max_retries, default 2) back off for at most a few
+# seconds, which is too short for shared/trial endpoints such as NVIDIA NIM:
+# they return bursts of HTTP 500 mid-run that clear after tens of seconds. One
+# such burst used to abort a whole multi-agent analysis, so transient server
+# errors get a second, slower retry layer on top of the SDK's.
+_TRANSIENT_ERRORS = (
+    openai.InternalServerError,   # 5xx (langchain's OpenAIAPIError subclasses it)
+    openai.APIConnectionError,    # connection drops and timeouts
+    openai.RateLimitError,
+)
+_TRANSIENT_BACKOFF_SECONDS = (10, 20, 40, 60, 60)
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -33,7 +50,17 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        for attempt, delay in enumerate((*_TRANSIENT_BACKOFF_SECONDS, None), start=1):
+            try:
+                return normalize_content(super().invoke(input, config, **kwargs))
+            except _TRANSIENT_ERRORS as exc:
+                if delay is None:
+                    raise
+                logger.warning(
+                    "%s: transient provider error (%s); retrying in %ds (attempt %d/%d)",
+                    self.model_name, exc, delay, attempt, len(_TRANSIENT_BACKOFF_SECONDS),
+                )
+                time.sleep(delay)
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

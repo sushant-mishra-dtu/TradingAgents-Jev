@@ -47,6 +47,7 @@ from cli.webui.jobs import (
     load_report_sections,
     report_rating,
 )
+from cli.webui.ticker_search import search_tickers
 from tradingagents.backtest import iter_grid
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV, get_api_key_env
@@ -412,6 +413,8 @@ class Handler(BaseHTTPRequestHandler):
         match parts:
             case ["options"]:
                 return self._send_json(options())
+            case ["tickers"]:
+                return self._send_json(search_tickers(q.get("q", "")))
             case ["analyses"]:
                 return self._send_json(analysis_list(registry))
             case ["analyses", job_id]:
