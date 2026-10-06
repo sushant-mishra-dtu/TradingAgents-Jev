@@ -90,8 +90,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # actions and the results and shareholding filings imported into it. Raw
     # downloads are cached under data_cache_dir/india/raw.
     "india_db_path": os.getenv("TRADINGAGENTS_INDIA_DB") or os.path.join(_TRADINGAGENTS_HOME, "india", "india.db"),
-    "india_request_interval": 1.0,   # at most one request per second per host
-    "india_user_agent": None,        # None = "TradingAgents/<version> (India data layer; +<repo>)"
+    "india_request_interval": 1.0,   # seconds between requests per host; at least 1 (lower is raised to 1)
+    "india_user_agent": None,        # your contact (email or URL), appended to "TradingAgents/<version> (...)"
     # Stock screener (`tradingagents screen ...`, the /screens page). Metrics
     # snapshots live in the India database; saved screens, custom ratios,
     # watchlists, alerts and the alert inbox are yours, so they live in their own

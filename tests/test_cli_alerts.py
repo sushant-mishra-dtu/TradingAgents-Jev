@@ -49,7 +49,8 @@ def test_evaluating_twice_fires_once(india):
     fired = run("india", "evaluate-alerts")
     assert "1 fired" in fired.output and "GROWCO.NS closed at" in fired.output and "(data 2026-10-05)" in fired.output
     again = run("india", "evaluate-alerts", "--kinds", "price")
-    assert "0 fired" in again.output and "Unread in the inbox: 1" in again.output
+    # Rich wraps at the terminal width (80 columns in CI), so compare words, not lines.
+    assert "0 fired" in again.output and "Unread in the inbox: 1" in " ".join(again.output.split())
     assert run("india", "evaluate-alerts", "--kinds", "gossip").exit_code != 0
 
 

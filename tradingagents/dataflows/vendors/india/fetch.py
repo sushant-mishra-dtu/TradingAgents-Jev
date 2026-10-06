@@ -1,16 +1,20 @@
 """Polite downloads from the exchanges' public archives, cached for good.
 
-Every request waits its turn per host (one a second by default, set with
-TRADINGAGENTS_INDIA_REQUEST_INTERVAL), says who is asking (TradingAgents and its
-version; set TRADINGAGENTS_INDIA_USER_AGENT to add your own contact), retries a
-timeout or a server error with growing pauses, and honours Retry-After.
+Only archives.nseindia.com is ever asked (``ALLOWED_HOSTS``), and a redirect is
+never followed: one to another host stops the run, one within the host fails
+that file. Every request waits its turn per host (one a second, or longer with
+TRADINGAGENTS_INDIA_REQUEST_INTERVAL; never shorter), says who is asking
+(TradingAgents and its version, always; TRADINGAGENTS_INDIA_USER_AGENT adds your
+contact to it), retries a timeout or a server error with growing pauses, and
+honours Retry-After.
 
 Nothing here works around an access control. archives.nseindia.com answers a
 path it does not serve (bhavcopies before 2016, say) with the same Akamai
-"Access Denied" page it would use to refuse a client, so a 403 is checked
-against a file the host always serves: if that is refused too, the host is
-refusing us and ``SourceBlocked`` stops the run; if not, the one file is
-reported missing. A 429 that outlasts its Retry-After also stops the run.
+"Access Denied" page it would use to refuse a client, so the first 403 is
+checked against a file the host always serves: if that is refused too, the host
+is refusing us and ``SourceBlocked`` stops the run; if not, that file and every
+later 403 are reported missing. A 429 that outlasts its Retry-After also stops
+the run.
 
 Each download is written once under ``<data_cache_dir>/india/raw/`` and read
 from there afterwards, so re-parsing never fetches again.
@@ -24,7 +28,7 @@ import time
 from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -34,13 +38,19 @@ logger = logging.getLogger(__name__)
 
 PROJECT_URL = "https://github.com/sushant-mishra-dtu/TradingAgents-Jev"
 CANARY_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+# The only hosts the India layer may fetch from. NSE's www and nsearchives hosts
+# and BSE's sit behind bot protection meant for browsers: never ask them.
+ALLOWED_HOSTS = frozenset({"archives.nseindia.com"})
+MIN_INTERVAL = 1.0  # seconds between requests to a host; a setting can only lengthen it
+_MAX_CONTACT = 200
 _RETRIES = 3
 _MAX_RETRY_AFTER = 300.0
 
 
 class SourceBlocked(VendorError):
     """The host is refusing this client (403 on a file it always serves, or 429
-    that will not clear). Systemic: the run stops rather than keep asking."""
+    that will not clear), or a URL or redirect points off the allowed archive
+    host. Systemic: the run stops rather than keep asking."""
 
 
 class FetchFailed(VendorError):
@@ -55,6 +65,13 @@ def default_user_agent() -> str:
     return f"TradingAgents/{version} (India data layer; +{PROJECT_URL})"
 
 
+def user_agent_with(contact: str | None) -> str:
+    """``default_user_agent()``, with ``contact`` (an email or a URL) appended:
+    a setting can say how to reach you, never pretend to be someone else."""
+    contact = "".join(ch for ch in contact or "" if ch.isprintable()).strip()[:_MAX_CONTACT].strip()
+    return f"{default_user_agent()} contact: {contact}" if contact else default_user_agent()
+
+
 class ArchiveClient:
     """GETs files from the exchanges' archives: throttled, retried, cached."""
 
@@ -63,14 +80,15 @@ class ArchiveClient:
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
                  canary_url: str = CANARY_URL):
         self.raw_dir = Path(raw_dir)
-        self.interval = max(0.0, float(interval))
+        self.interval = max(MIN_INTERVAL, float(interval))
         self.timeout = timeout
         self.session = session or requests.Session()
-        self.session.headers.update({"User-Agent": user_agent or default_user_agent(),
+        self.session.headers.update({"User-Agent": user_agent_with(user_agent),
                                      "Accept": "*/*", "Accept-Language": "en-IN,en;q=0.8"})
         self.sleep, self.clock = sleep, clock
         self.canary_url = canary_url
         self._last: dict[str, float] = {}
+        self._refusals: dict[str, bool] = {}  # host -> the canary's verdict, asked once
         self.requests = 0
         self.downloaded = 0  # bytes
 
@@ -112,10 +130,13 @@ class ArchiveClient:
                 self.sleep(remaining)
         self._last[host] = self.clock()
 
-    def _request(self, url: str) -> requests.Response:
+    def _request(self, url: str, **kwargs) -> requests.Response:
+        host = urlsplit(url).hostname
+        if host not in ALLOWED_HOSTS:
+            raise SourceBlocked(f"refusing to fetch {host}: not an allowed archive host")
         self._wait(urlsplit(url).netloc)
         self.requests += 1
-        return self.session.get(url, timeout=self.timeout)
+        return self.session.get(url, timeout=self.timeout, allow_redirects=False, **kwargs)
 
     def _download(self, url: str) -> bytes | None:
         pause = 2.0
@@ -129,13 +150,15 @@ class ArchiveClient:
                 pause *= 2
                 continue
             status = response.status_code
+            if 300 <= status < 400:
+                _refuse_redirect(url, status, response.headers.get("Location"))
             if status == 200:
                 self.downloaded += len(response.content)
                 return response.content
             if status == 404:
                 return None
             if status == 403:
-                if self._refused():
+                if self._refused(urlsplit(url).hostname):
                     raise SourceBlocked(f"{urlsplit(url).netloc} refuses this client (403 on {url} "
                                         f"and on {self.canary_url})")
                 logger.info("403 on %s while the host still serves others: treated as missing", url)
@@ -154,15 +177,34 @@ class ArchiveClient:
             raise FetchFailed(f"{url}: HTTP {status}")
         raise FetchFailed(f"{url}: no answer after {_RETRIES} tries")
 
-    def _refused(self) -> bool:
+    def _refused(self, host: str | None) -> bool:
         """Whether a 403 means "not you" or "not this file": ask for a file the
-        host always serves, once."""
+        host always serves, once per host for the client's lifetime, reading
+        only the status."""
         if not self.canary_url:
             return True
-        try:
-            return self._request(self.canary_url).status_code in (401, 403, 429)
-        except requests.RequestException:
-            return True
+        if host not in self._refusals:
+            try:
+                response = self._request(self.canary_url, stream=True)
+            except requests.RequestException:
+                return True
+            try:
+                self._refusals[host] = response.status_code in (401, 403, 429)
+            finally:
+                response.close()
+        return self._refusals[host]
+
+
+def _refuse_redirect(url: str, status: int, location: str | None) -> None:
+    """Redirects are never followed. One off the host stops the run: every later
+    file would redirect too, and where NSE moved its files is for a person to
+    check (the URLs are in india/nse.py). One within the host fails this file."""
+    if not location:
+        raise FetchFailed(f"{url}: HTTP {status} without a Location")
+    target = urljoin(url, location)
+    if urlsplit(target).hostname != urlsplit(url).hostname:
+        raise SourceBlocked(f"{url} redirects (HTTP {status}) to {target}, off the archive host; not followed")
+    raise FetchFailed(f"{url}: moved to {urlsplit(target).path} (HTTP {status}); not followed")
 
 
 def _retry_after(value: str | None, default: float) -> float:
