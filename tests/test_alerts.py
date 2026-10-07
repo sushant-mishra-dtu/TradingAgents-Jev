@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -468,7 +468,7 @@ def test_the_poller_is_off_by_default_and_never_faster_than_five_minutes():
     (datetime(2026, 10, 9, 9, 15, tzinfo=IST), True),
     (datetime(2026, 10, 9, 15, 30, tzinfo=IST), True),
     (datetime(2026, 10, 9, 15, 31, tzinfo=IST), False),
-    (datetime(2026, 10, 9, 4, 0, tzinfo=timezone.utc), True),  # 04:00 UTC is 09:30 in India
+    (datetime(2026, 10, 9, 4, 0, tzinfo=UTC), True),  # 04:00 UTC is 09:30 in India
 ])
 def test_market_hours(when, open_):
     assert alerts.market_open(when) is open_

@@ -51,7 +51,7 @@ from cli.webui.jobs import (
 )
 from cli.webui.ticker_search import search_tickers
 from tradingagents.backtest import iter_grid
-from tradingagents.dataflows.errors import NoMarketDataError, VendorError, VendorRateLimitError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorError, VendorUnavailableError
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV, get_api_key_env
 from tradingagents.llm_clients.model_catalog import get_model_options
@@ -312,7 +312,7 @@ def company(symbol: str, basis: str | None = None) -> dict:
         raise ApiError(f"Yahoo Finance has no data for {symbol.upper()}. Indian stocks need "
                        "their exchange suffix: .NS for NSE or .BO for BSE.",
                        HTTPStatus.NOT_FOUND) from None
-    except VendorRateLimitError as exc:
+    except VendorUnavailableError as exc:
         raise ApiError(f"{exc}. Try again in a minute.", HTTPStatus.SERVICE_UNAVAILABLE) from None
     except VendorError as exc:
         raise ApiError(str(exc), HTTPStatus.BAD_GATEWAY) from None

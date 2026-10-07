@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -164,8 +165,8 @@ class TestFeeds:
         assert feed.unavailable and not feed.items
 
     def test_reddit_feed_items(self, monkeypatch):
-        from datetime import datetime, timezone
-        ts = datetime(2026, 5, 5, tzinfo=timezone.utc).timestamp()
+        from datetime import datetime
+        ts = datetime(2026, 5, 5, tzinfo=UTC).timestamp()
         posts = [{"title": "NVDA earnings", "created_utc": ts, "selftext": "beat", "subreddit": "stocks"}]
         monkeypatch.setattr(reddit, "_fetch_subreddit_rss", lambda *a, **k: posts)
         feed = reddit.fetch_reddit_feed(
@@ -545,3 +546,20 @@ def test_without_the_extra_a_key_screens_posts_unless_jev_is_disabled(monkeypatc
         overall_band=SentimentBand.MIXED, overall_score=5.0, confidence="low", narrative="n"))
     sentiment.create_sentiment_analyst(llm)(_state())
     assert seen == [screen if screened else None] * 2
+
+
+@pytest.mark.unit
+def test_the_judgments_leave_the_analysts_own_graph_with_its_report():
+    """Each analyst runs in a graph that returns only what its spec names, so the
+    judgments must be named there to reach the run state, the UI and the report."""
+    from langchain_core.messages import AIMessage
+
+    from tradingagents.graph.analyst_execution import ANALYST_NODE_SPECS
+    from tradingagents.graph.setup import _analyst_graph
+
+    def analyst(state):
+        return {"messages": [AIMessage(content="report")], "sentiment_report": "report",
+                "sentiment_judgments": {"band": "Mixed"}, "news_report": "not mine"}
+
+    out = _analyst_graph(ANALYST_NODE_SPECS["social"], analyst, 3).invoke({"messages": []})
+    assert out == {"sentiment_report": "report", "sentiment_judgments": {"band": "Mixed"}}

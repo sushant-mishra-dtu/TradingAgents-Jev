@@ -16,10 +16,10 @@ import yfinance as yf
 from yfinance.exceptions import YFRateLimitError
 
 from tradingagents.dataflows.company_profile import CompanyData, as_number, build_profile
-from tradingagents.dataflows.errors import VendorRateLimitError
+from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.dataflows.field_aliases import ALIASES as FIELD_ALIASES
 from tradingagents.dataflows.symbols import normalize_symbol
-from tradingagents.dataflows.vendors.yahoo.ohlcv import raise_for_empty, yf_retry
+from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
 
 # Yahoo's names for each field of ``CompanyData``, by where they come from: its
 # section of the one alias table every source shares. Names differ between
@@ -117,8 +117,12 @@ def _read(get):
     so a statement Yahoo lacks leaves the rest of the page standing."""
     try:
         return yf_retry(get)
-    except YFRateLimitError as exc:
-        raise VendorRateLimitError("Yahoo Finance is rate-limiting requests") from exc
+    except VendorUnavailableError as exc:
+        # yf_retry reports every failed request as unavailable; only a throttle
+        # that outlasted its retries is one, the rest are data Yahoo lacks.
+        if isinstance(exc.__cause__, YFRateLimitError):
+            raise VendorUnavailableError("Yahoo Finance is rate-limiting requests") from exc.__cause__
+        return None
     except Exception:  # noqa: BLE001 — yfinance raises assorted errors for data it lacks
         return None
 
@@ -170,7 +174,7 @@ def build_company_profile(symbol: str) -> dict:
     """The Company page's data for ``symbol``, at most ``CACHE_TTL_SECONDS`` old.
 
     Raises ``NoMarketDataError`` for a symbol Yahoo does not know, and
-    ``VendorRateLimitError`` when Yahoo throttles or cannot be reached.
+    ``VendorUnavailableError`` when Yahoo throttles or cannot be reached.
     """
     canonical = normalize_symbol(symbol)
     now = time.monotonic()

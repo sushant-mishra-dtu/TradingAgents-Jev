@@ -78,7 +78,7 @@ class ConditionalLogic:
         """
         debate = state["investment_debate_state"]
         if (
-            debate["count"] >= 2 * self.max_debate_rounds  # each round: bull, then bear
+            debate["count"] >= 2 * self.max_debate_rounds  # max_debate_rounds turns each for bull and bear
             or self._converged("investment", debate)
         ):
             return "Research Manager"
@@ -93,7 +93,7 @@ class ConditionalLogic:
         """
         debate = state["risk_debate_state"]
         if (
-            debate["count"] >= 3 * self.max_risk_discuss_rounds  # each round: all three analysts
+            debate["count"] >= 3 * self.max_risk_discuss_rounds  # turns each for the three risk analysts
             or self._converged("risk", debate)
         ):
             return "Portfolio Manager"
