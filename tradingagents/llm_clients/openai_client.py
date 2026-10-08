@@ -1,7 +1,9 @@
 import logging
 import os
 import re
+import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -28,6 +30,20 @@ _TRANSIENT_ERRORS = (
     openai.RateLimitError,
 )
 _TRANSIENT_BACKOFF_SECONDS = (10, 20, 40, 60, 60)
+
+# Set by whoever runs the graph and may stop it (the web UI's analysis job). LangGraph
+# copies the context into its pool threads, so the retry wait below sees it: a stop
+# ends the wait at once and the provider's error surfaces instead of another attempt.
+cancel_event: ContextVar[threading.Event | None] = ContextVar("llm_cancel_event", default=None)
+
+
+def _wait_or_cancelled(delay: float) -> bool:
+    """Wait ``delay`` seconds before a retry; True if the run was stopped meanwhile."""
+    event = cancel_event.get()
+    if event is None:
+        time.sleep(delay)
+        return False
+    return event.wait(delay)
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -60,7 +76,8 @@ class NormalizedChatOpenAI(ChatOpenAI):
                     "%s: transient provider error (%s); retrying in %ds (attempt %d/%d)",
                     self.model_name, exc, delay, attempt, len(_TRANSIENT_BACKOFF_SECONDS),
                 )
-                time.sleep(delay)
+                if _wait_or_cancelled(delay):
+                    raise
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

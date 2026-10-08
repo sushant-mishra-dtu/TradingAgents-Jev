@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 
 import pytest
 
 import tradingagents.default_config as default_config_module
+from tradingagents.screener import delivery
 
 
 def _config_with_env(monkeypatch, **overrides):
@@ -113,6 +116,22 @@ def test_empty_path_value_keeps_the_default_path(monkeypatch):
     assert config["results_dir"] == os.path.join(home, "logs")
     assert config["data_cache_dir"] == os.path.join(home, "cache")
     assert config["memory_log_path"] == os.path.join(home, "memory", "trading_memory.md")
+
+
+def test_every_blank_variable_in_env_example_keeps_its_default(monkeypatch):
+    """Uncommenting any blank line of .env.example (the India, screener and alert
+    variables among them) changes nothing."""
+    example = Path(__file__).resolve().parent.parent / ".env.example"
+    blank = [line[1:-1] for line in example.read_text(encoding="utf-8").splitlines()
+             if re.fullmatch(r"#TRADINGAGENTS_[A-Z_]+=", line)]
+    assert {"TRADINGAGENTS_INDIA_DB", "TRADINGAGENTS_SCREENER_DB", "TRADINGAGENTS_INDIA_REQUEST_INTERVAL",
+            "TRADINGAGENTS_INDIA_USER_AGENT", "TRADINGAGENTS_SCREENER_UNIVERSE", "TRADINGAGENTS_ALERT_POLL_MINUTES",
+            "TRADINGAGENTS_ALERT_TELEGRAM_TOKEN", "TRADINGAGENTS_ALERT_SMTP_FROM"} <= set(blank)
+    for name in blank:
+        monkeypatch.delenv(name, raising=False)
+    defaults = _config_with_env(monkeypatch)
+    assert _config_with_env(monkeypatch, **dict.fromkeys(blank, "")) == defaults
+    assert not any(c["configured"] for c in delivery.status().values())
 
 
 def test_invalid_int_raises(monkeypatch):

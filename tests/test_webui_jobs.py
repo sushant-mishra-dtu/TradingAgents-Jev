@@ -1,6 +1,7 @@
 """The web UI's background jobs and history readers, without Streamlit or an LLM."""
 
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -125,6 +126,43 @@ def test_analysis_job_stops_when_cancelled(config):
     _finish(job)
     assert job.status == jobs.CANCELLED
     assert jobs.load_decisions(config["memory_log_path"]) == []
+
+
+def test_cancel_interrupts_a_provider_retry_wait(config, monkeypatch):
+    """A run stopped while the OpenAI-compatible client waits out a transient error
+    ends within 2 s as cancelled, not after the minutes of backoff, nor as failed."""
+    import httpx
+    import openai
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from tradingagents.llm_clients.openai_client import NormalizedChatOpenAI
+
+    calls = []
+
+    def always_500(self, input, config=None, **kwargs):
+        calls.append(input)
+        request = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/chat/completions")
+        raise openai.InternalServerError("Internal server error", response=httpx.Response(500, request=request),
+                                         body=None)
+
+    monkeypatch.setattr(BaseChatModel, "invoke", always_500)
+    llm = NormalizedChatOpenAI(model="nvidia/nemotron-3-super-120b-a12b", api_key="k")
+
+    def calling_stream(self, state, **args):
+        yield {"messages": [llm.invoke("hi")]}  # waits 10 s, 20 s, ... between attempts
+
+    monkeypatch.setattr(FakeGraph, "stream", calling_stream)
+    job = jobs.AnalysisJob("NVDA", "2026-09-01", "stock", ["market"], config).start()
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls, "the LLM was never called"
+    stopped = time.monotonic()
+    job.cancel()
+    job._thread.join(2)
+    assert not job._thread.is_alive() and time.monotonic() - stopped < 2
+    assert job.status == jobs.CANCELLED and job.error is None
+    assert len(calls) == 1  # no retry after the stop
 
 
 def test_analysis_job_reports_a_failure(config, monkeypatch):

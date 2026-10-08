@@ -369,11 +369,35 @@ See `tradingagents/default_config.py` for all configuration options.
 tradingagents india sync-securities                 # NSE equity list + index industries
 tradingagents india sync-prices --from 2016-01-01   # bhavcopies + delivery, one-time backfill
 tradingagents india sync-actions --from 2016-01-01  # splits, bonuses, rights, dividends, shares issued
+tradingagents india sync-documents --universe nifty50 --from 2026-01-01   # announcement links
 tradingagents india import ~/Downloads/xbrl         # results / shareholding XBRL you saved
 tradingagents india status
 tradingagents india sync-all                        # the nightly run (schedule it yourself)
 tradingagents india reparse-actions                 # re-read stored corporate actions after a parser fix
 ```
+
+Every sync resumes where the last one stopped; `--force` redoes the days or files already done. One sync runs at a time (an import too), and a command exits non-zero only when the run itself cannot go on: the host refusing us or redirecting off the archive, the network down, another sync running, or a bad argument.
+
+| Command | Options |
+| --- | --- |
+| `sync-securities` | `--force` |
+| `sync-prices` | `--from YYYY-MM-DD` (required), `--to` (default today), `--force` |
+| `sync-actions` | `--from` (default a year ago), `--to` (default today), `--force` |
+| `sync-documents` | announcement and board-meeting links (results, annual reports, concalls, credit ratings) from NSE's daily PR files: `--symbols RELIANCE,TCS` or `--universe nifty50`, `nifty500` (the default) or `all`; `--from` (default a year ago), `--to` (default today), `--force` |
+| `import PATH...` | files or folders of results and shareholding XBRL, in any folder. `--filed-at YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` says when they became public, for files whose names do not carry NSE's submission time; `--force` re-imports. A path that does not exist stops the command; a folder with no `.xml` files is noted |
+| `sync-results`, `sync-shareholding` | import only that kind from the inbox (`--dir`, default `<cache>/india/inbox`): `--symbols` or `--universe`, `--from YEAR` (the earliest period), `--force` |
+| `sync-all` | securities, the new days of prices, actions and announcements (announcements for `--universe`, default `nifty500`), then the inbox (`--dir`); then the live snapshot (`--snapshot/--no-snapshot`) and your alerts (`--alerts/--no-alerts`), both on by default; `--force` |
+| `build-snapshot` | see [Stock screener](#stock-screener-india): `--as-of`, `--cutoff`, `--universe` |
+| `evaluate-alerts` | see [Alerts](#alerts): `--kinds` |
+| `reparse-actions`, `status` | no options |
+
+The downloads can be tuned with environment variables (or `.env`):
+
+| Variable | Effect |
+| --- | --- |
+| `TRADINGAGENTS_INDIA_DB` | the database file (default `~/.tradingagents/india/india.db`) |
+| `TRADINGAGENTS_INDIA_REQUEST_INTERVAL` | seconds between requests to the archive; at least 1, and a smaller value is raised to 1 |
+| `TRADINGAGENTS_INDIA_USER_AGENT` | your contact (an email or URL), appended to the `TradingAgents/<version>` User-Agent every request carries |
 
 Sources and their terms (checked 2026-10-05):
 - **archives.nseindia.com** (equity list, index lists, bhavcopies with ISIN from 2016, MTO deliveries and daily PR files from 2010) is fetched at most once a second with an honest User-Agent. NSE's Terms of Use prohibit "systematic or automated data collection"; running these syncs is your decision, for personal use.
@@ -388,8 +412,10 @@ The **Screens** page and `tradingagents screen ...` filter every stock in the In
 ```bash
 tradingagents india build-snapshot                      # the live snapshot (also rebuilt by india sync-all)
 tradingagents india build-snapshot --as-of 2025-10-06   # a historical one, kept beside it
+tradingagents india build-snapshot --as-of 2025-10-06 --cutoff 15:30   # only filings made by the close
 tradingagents screen run "Market Capitalization > 500 AND Return on capital employed > 20"
 tradingagents screen run "Return over 1 year > 20" --as-of 2025-10-06 --limit 50 --sort return_1y
+tradingagents screen run "ROCE > 20" --columns pe,roe,market_cap --sort roe   # extra columns, by metric key
 tradingagents screen list                               # your saved screens and the presets
 tradingagents screen metrics growth                     # the metrics whose names match "growth"
 ```
@@ -402,7 +428,7 @@ tradingagents screen metrics growth                     # the metrics whose name
 
 **What the figures are.** "TTM" is the latest four quarters summed when the newest quarter is after the newest fiscal year, else that year; "last year" is the newest fiscal year filed; balance-sheet figures are the newest year-end balance sheet's. Prices are adjusted for splits, bonuses and rights, not dividends, and a stock with no close in the 15 days before the snapshot has no price. Market capitalisation is the last close times the shares outstanding: NSE's own issued-share count from its daily PR file when the database has it, else the latest shareholding pattern's total, else equity capital over face value, each multiplied by any split or bonus since its date. Dividend yield is the past year's dividends per share over the price, 0 when none was paid, blank if the corporate-actions sync does not cover the year. Every formula is the Company page's own (`dataflows/formulas.py`), and the Company page lists every metric in its **All metrics** section, so the two always agree.
 
-**Snapshots.** `metrics_snapshot` in the India database holds a row per stock and a column per metric, keyed by `as_of_date` (`live`, or a date). A historical snapshot reads the database point in time: filings filed by its date, prices up to it, and actions known by then; its universe is the stocks that traded in the 15 days before it, so stocks delisted since stay in. The default universe is listed EQ-series stocks (`screener_universe`: `eq`, `listed`, `all`, or `--universe RELIANCE,TCS`). Pick a historical snapshot on the page, or pass `--as-of`. The fundamentals screens need results and shareholding filings imported (`tradingagents india import`); with prices only, the price, return, moving-average, market-cap and dividend metrics work and the rest are blank.
+**Snapshots.** `metrics_snapshot` in the India database holds a row per stock and a column per metric, keyed by `as_of_date` (`live`, or a date). A historical snapshot reads the database point in time: filings filed by its date, prices up to it, and actions known by then; its universe is the stocks that traded in the 15 days before it, so stocks delisted since stay in. The default universe is listed EQ-series stocks (`screener_universe`: `eq`, `listed`, `all`, or `--universe RELIANCE,TCS`). Pick a historical snapshot on the page, or pass `--as-of`. A date covers its whole day, so results filed that evening count; `--cutoff HH:MM` (India time, with `--as-of`) counts only filings made by then, such as `15:30` for the market close, while prices stay that day's close. `build-snapshot --universe` and `TRADINGAGENTS_SCREENER_UNIVERSE` set the universe. `screen run` takes `--as-of`, `--limit` (rows shown), `--sort KEY` (descending; `+KEY` for ascending; keys as `screen metrics` lists them) and `--columns KEY,KEY` (metrics shown beside those the query uses). The fundamentals screens need results and shareholding filings imported (`tradingagents india import`); with prices only, the price, return, moving-average, market-cap and dividend metrics work and the rest are blank.
 
 **Custom ratios.** Define `Name = expression` over catalog metrics, such as `Earnings to price = Net profit / Market Capitalization`, then use the name in any query. A ratio's name may not be a catalog name or alias, ratios may use other ratios but never in a circle or more than 8 deep, and each is compiled into the query rather than stored. Saved screens and ratios live in `~/.tradingagents/screener/screens.db` (`TRADINGAGENTS_SCREENER_DB`), your own database beside the India one, with your watchlists, alerts and the alert inbox. Rebuilding or re-syncing the India database never touches it; the file's schema is versioned and upgrades itself in place.
 
@@ -420,7 +446,7 @@ One table serves screens, peers, industries and watchlists: sortable columns, th
 
 ### Watchlists
 
-The **Watchlists** page keeps any number of named lists of Indian stocks. Add stocks by name or symbol, from a Company page (**+ Watchlist**) or from selected screen results; give each a note; rename, reorder and delete lists; and import or export the symbols as CSV (a column of symbols, or `symbol,note,quantity,avg_price`; lines it cannot read are listed with the reason). Each list keeps its own columns and sort. Prices are the latest NSE close in the live snapshot, never a live tick, and the page says which day's.
+The **Watchlists** page keeps any number of named lists of Indian stocks. Add stocks by name or symbol, from a Company page (**+ Watchlist**) or from selected screen results; give each a note; rename, reorder and delete lists; and import or export the symbols as CSV. Import reads a column of symbols, or a header row with `symbol` (or `ticker`) and any of `note`, `quantity`, `avg_price`, so an export reads back in; lines it cannot read are listed with the reason. Export writes `symbol,name,note`, plus `quantity,avg_price` in holdings mode. Each list keeps its own columns and sort. Prices are the latest NSE close in the live snapshot, never a live tick, and the page says which day's.
 
 **Holdings mode** lets each row carry a quantity and an average price (long holdings). The table adds invested value, current value, P&L and P&L % and a total row. **Use as portfolio for agent runs** builds the same `PortfolioContext` a portfolio JSON file gives (`tradingagents.portfolio`) and hands it to the Analyze page's portfolio option, so the trader, risk desk and portfolio manager reason from your holdings; the run's activity log shows the block they read. **Analyze with agents** on a watchlist queues up to 10 runs one at a time, like the Screens page, and can send the holdings with each.
 

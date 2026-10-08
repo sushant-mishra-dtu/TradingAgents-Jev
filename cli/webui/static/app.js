@@ -113,6 +113,7 @@ const I = {
   alert: svg('<circle cx="12" cy="12" r="9"></circle><path d="M12 7v6M12 16.5v.5"></path>', 18, 'stroke-width="2"'),
   key: svg('<circle cx="8" cy="15" r="4"></circle><path d="M11 12l9-9M17 6l3 3"></path>', 16),
   watch: svg('<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"></path>'),
+  menu: svg('<path d="M4 7h16M4 12h16M4 17h16"></path>', 20, 'stroke-width="2"'),
   bell: svg('<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9z"></path><path d="M10 19a2 2 0 0 0 4 0"></path>'),
   sheet: svg('<rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M4 9h16M4 15h16M10 3v18"></path>', 16),
   briefcase: svg('<rect x="3" y="7" width="18" height="13" rx="2"></rect><path d="M9 7V5h6v2M3 12h18"></path>', 16),
@@ -199,8 +200,10 @@ function runSettings() {
 
 let activeNav = 'analyze';
 let editableSettings = true;
+let sideOpen = false; // on a narrow screen the sidebar folds behind its menu button
 
-/** The sidebar; only the Analyze page edits the model settings, the others summarise them. */
+/** The sidebar; only the Analyze page edits the model settings, the others summarise them.
+ * It starts with the skip link, so that is the page's first focusable element. */
 function renderSide(nav = activeNav, editable = editableSettings) {
   activeNav = nav;
   editableSettings = editable;
@@ -209,8 +212,14 @@ function renderSide(nav = activeNav, editable = editableSettings) {
   const link = (id, href, label, icon) => `<a href="${href}" data-link ${nav === id ? 'aria-current="page"' : ''}>${icon}${label}</a>`;
   const pref = theme.pref();
   const themeBtn = (id, label, icon) => `<button type="button" class="b" data-theme="${id}" aria-pressed="${attr(pref === id)}" aria-label="${label}" title="${label}">${icon}</button>`;
+  side.classList.toggle('open', sideOpen);
   side.innerHTML = `
-    <a class="brand" href="/" title="About TradingAgents">${I.logo()}<div><div class="brand-name">TradingAgents</div><div class="brand-sub">with TypeSafe Jev</div></div></a>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="side-top">
+      <a class="brand" href="/" title="About TradingAgents">${I.logo()}<div><div class="brand-name">TradingAgents</div><div class="brand-sub">with TypeSafe Jev</div></div></a>
+      <button type="button" class="b side-menu" aria-expanded="${attr(sideOpen)}" aria-controls="side-panel">${I.menu}<span class="sr">Menu</span></button>
+    </div>
+    <div class="side-panel" id="side-panel">
     <div class="nav">
       ${link('analyze', '/analyze', 'Analyze', I.analyze)}
       ${link('company', '/company', 'Company', I.company)}
@@ -226,6 +235,7 @@ function renderSide(nav = activeNav, editable = editableSettings) {
       <div class="seg" role="group" aria-labelledby="th-l">
         ${themeBtn('light', 'Light theme', I.sun)}${themeBtn('dark', 'Dark theme', I.moon)}${themeBtn('system', 'Match system theme', I.monitor)}
       </div>
+    </div>
     </div>`;
 }
 
@@ -309,10 +319,28 @@ function settingsSummary() {
 function bindSide() {
   const side = $('#side');
   side.addEventListener('click', (e) => {
+    if (e.target.closest('.skip')) { // a fragment link would go through the router's popstate
+      e.preventDefault();
+      $('#main').focus();
+      return;
+    }
+    if (e.target.closest('.side-menu')) {
+      sideOpen = !sideOpen;
+      renderSide();
+      $('#side .side-menu').focus();
+      return;
+    }
     const t = e.target.closest('[data-theme]');
     if (t) { theme.set(t.dataset.theme); renderSide(); return; }
     const d = e.target.closest('[data-depth]');
     if (d) { settings.depth = d.dataset.depth; saveSettings(); renderSide(); }
+  });
+  side.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sideOpen) {
+      sideOpen = false;
+      renderSide();
+      $('#side .side-menu').focus();
+    }
   });
   side.addEventListener('toggle', (e) => {
     if (e.target.matches('details.adv')) store.set('tradingagents-adv', e.target.open);
@@ -555,6 +583,7 @@ function route(navigated = false) {
   const name = location.pathname.replace(/\/$/, '') || '/analyze';
   const page = PAGES[name] || PAGES['/analyze'];
   current = page;
+  if (navigated) sideOpen = false;
   renderSide(page.nav, page.editsSettings === true);
   const main = $('#main');
   const root = document.createElement('div');

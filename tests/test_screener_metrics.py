@@ -226,6 +226,41 @@ def test_a_snapshot_before_a_filing_does_not_see_it(db):
     assert after["sales_growth_5y"] == pytest.approx(10.0)
 
 
+def refile(path, filing_id: str, filed_at: str) -> None:
+    conn = store.connect(path)
+    with conn:
+        conn.execute("UPDATE filings SET filed_at=? WHERE filing_id=?", (filed_at, filing_id))
+        conn.execute("UPDATE financials SET filed_at=? WHERE filing_id=?", (filed_at, filing_id))
+    conn.close()
+
+
+def test_a_cutoff_leaves_out_filings_made_after_it_that_day(db):
+    refile(db, "GROWCO-FY2026", "2026-05-20T22:57:00")  # results after the close
+    build(db, "2026-05-20")  # by default the date covers its whole day, as before
+    assert row(db, fx.GROWCO, "2026-05-20")["sales_ly"] == pytest.approx(fx.FY_SALES[2026])
+    conn = store.connect(db)
+    try:
+        result = snapshot.build_snapshot(conn, as_of="2026-05-20", cutoff="15:30")
+    finally:
+        conn.close()
+    assert result.as_of_date == "2026-05-20" and result.data_date == "2026-05-20"
+    after_close = row(db, fx.GROWCO, "2026-05-20")
+    assert after_close["sales_ly"] == pytest.approx(fx.RESTATED_FY2025_SALES)
+    assert after_close["price_date"] == "2026-05-20"  # still that day's close
+
+
+def test_a_cutoff_must_be_a_time_and_needs_a_date(db):
+    conn = store.connect(db)
+    try:
+        for bad in ("3:30pm", "24:00", "15:3"):
+            with pytest.raises(snapshot.SnapshotError, match="HH:MM"):
+                snapshot.build_snapshot(conn, as_of="2026-05-20", cutoff=bad)
+        with pytest.raises(snapshot.SnapshotError, match="needs --as-of"):
+            snapshot.build_snapshot(conn, cutoff="15:30")
+    finally:
+        conn.close()
+
+
 def test_a_restatement_counts_only_from_its_own_filing(db):
     build(db, "2025-10-06")
     build(db, "2026-04-01")
