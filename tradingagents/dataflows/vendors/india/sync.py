@@ -521,6 +521,8 @@ class Syncer:
             "isin": isin, "nse_symbol": filing.symbol if filing.symbol and filing.symbol != "NOTLISTED" else None,
             "bse_code": filing.scrip_code, "name": filing.name, "status": "filing-only"}])
         if kind == "results":
+            # A filing imported again (--force) has had its unknown tags counted already.
+            seen = self.conn.execute("SELECT 1 FROM filings WHERE filing_id=?", (filing.filing_id,)).fetchone()
             store.upsert_filing(self.conn, filing_id=filing.filing_id, isin=isin, kind=kind, format=filing.format,
                                 basis=filing.basis, period_end=filing.period_end, filed_at=filing.filed_at,
                                 filed_at_basis=filing.filed_at_basis, symbol=filing.symbol,
@@ -528,7 +530,8 @@ class Syncer:
                                 raw_path=str(raw), source=source)
             rows = store.upsert_financials(self.conn, isin=isin, basis=filing.basis, filing_id=filing.filing_id,
                                            filed_at=filing.filed_at, source=source, rows=filing.rows)
-            store.record_unknown_tags(self.conn, filing.unknown, filing.format, filing.filing_id)
+            if seen is None:
+                store.record_unknown_tags(self.conn, filing.unknown, filing.format, filing.filing_id)
             title = f"{filing.basis.title()} results, period ended {filing.period_end}"
             store.upsert_documents(self.conn, [(isin, filing.filed_at[:10], "results", title, filing.url, source)])
             return rows

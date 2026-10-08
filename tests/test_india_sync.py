@@ -203,6 +203,17 @@ def test_selectors_filter_imports(make, conn):
     assert picked.done == 1 and picked.skipped == 4
 
 
+def test_a_forced_reimport_counts_unknown_tags_once(make, conn):
+    one = FIXTURES / "INTEGRATED_FILING_INDAS_1000001_24042026105714_WEB.xml"
+    s = make()
+    s.import_files([one])
+    s.force = True
+    for _ in range(2):
+        assert s.import_files([one]).done == 1
+    counts = conn.execute("SELECT count FROM xbrl_unknown_tags WHERE tag='SomeNewlyIntroducedMetric'")
+    assert [r[0] for r in counts] == [1]
+
+
 def test_the_nightly_run_starts_after_each_jobs_last_day(make, conn, tmp_path):
     s = make()
     s.sync_prices(date(2026, 9, 28), date(2026, 10, 1))
