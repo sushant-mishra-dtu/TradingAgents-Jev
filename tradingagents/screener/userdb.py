@@ -99,6 +99,20 @@ MIGRATIONS = ((1, SCREENS + WATCHLISTS_AND_ALERTS),)
 VERSION = MIGRATIONS[-1][0]
 
 
+MAX_ID = 2**63 - 1  # SQLite's largest INTEGER
+
+
+def record_id(value, missing: Exception) -> int:
+    """A row id from a request: an int, or a string of ASCII digits, from 1 to 2^63 - 1.
+    Anything else raises ``missing`` (the caller's "No such ..." error), never a
+    TypeError or an OverflowError from SQLite."""
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 19:
+        value = int(value)
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_ID:
+        return value
+    raise missing
+
+
 def db_path() -> Path:
     return Path(get_config()["screener_db_path"]).expanduser()
 

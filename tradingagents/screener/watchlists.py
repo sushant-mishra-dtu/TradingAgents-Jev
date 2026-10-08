@@ -33,7 +33,7 @@ from datetime import datetime
 
 from tradingagents.dataflows.vendors.india import store
 from tradingagents.portfolio import PortfolioContext, Position
-from tradingagents.screener import engine, screens, snapshot
+from tradingagents.screener import engine, screens, snapshot, userdb
 
 MAX_WATCHLISTS = 100
 MAX_ITEMS = 500
@@ -79,10 +79,7 @@ def list_watchlists(conn) -> list[dict]:
 
 
 def _row(conn, watchlist_id) -> dict:
-    try:
-        watchlist_id = int(watchlist_id)
-    except (TypeError, ValueError):
-        raise WatchlistError("No such watchlist.") from None
+    watchlist_id = userdb.record_id(watchlist_id, WatchlistError("No such watchlist."))
     row = conn.execute("SELECT * FROM watchlists WHERE id=?", (watchlist_id,)).fetchone()
     if row is None:
         raise WatchlistError("No such watchlist.")
@@ -165,10 +162,7 @@ def reorder(conn, ids: list) -> list[dict]:
     if not isinstance(ids, list):
         raise WatchlistError("Send the watchlists' ids in their new order.")
     known = [r["id"] for r in conn.execute("SELECT id FROM watchlists ORDER BY position, id")]
-    try:
-        wanted = [int(i) for i in ids]
-    except (TypeError, ValueError):
-        raise WatchlistError("Watchlist ids are numbers.") from None
+    wanted = [userdb.record_id(i, WatchlistError("Watchlist ids are numbers from 1.")) for i in ids]
     unknown = [i for i in wanted if i not in known]
     if unknown:
         raise WatchlistError(f"No such watchlist: {unknown[0]}.")
