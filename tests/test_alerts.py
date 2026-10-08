@@ -169,7 +169,8 @@ def test_a_bad_condition_is_refused_with_its_position(user, india):
 def test_a_deleted_custom_ratio_is_reported_not_raised(user, india):
     ratio = screens.save_ratio(user, {"definition": "Double price = Current price * 2"})
     a = alerts.save(user, {"kind": "metric", "symbol": "GROWCO", "query": "Double price > 1"}, india)
-    screens.delete_ratio(user, ratio.id)
+    with user:  # deleted behind the app's back: delete_ratio refuses while an alert uses it
+        user.execute("DELETE FROM custom_ratios WHERE id=?", (ratio.id,))
     out = run(user, india)
     assert out.errors and not alerts.get(user, a["id"])["status"]["ok"]
 
@@ -196,6 +197,45 @@ def test_screen_membership_changes_fire_with_who_entered_and_left(user, india):
     assert run(user, india, T0 + timedelta(days=3, hours=1)).fired == []
     rebuild(india, "2026-10-05T21:00:00")  # rebuilt, same members: nothing
     assert run(user, india, T0 + timedelta(days=3, hours=2)).fired == []
+
+
+def test_a_snapshot_rebuilt_from_older_data_is_skipped(user, india):
+    screen = screens.save_screen(user, {"name": "Pricey", "query": "Current price > 150"}, [])
+    a = alerts.save(user, {"kind": "screen", "screen": screen["id"]}, india)
+    metric = alerts.save(user, {"kind": "metric", "symbol": "GROWCO", "query": "Current price > 150"}, india)
+    run(user, india)
+    d1 = alerts.get(user, a["id"])["status"]["dataDate"]
+    bar(india, "2026-10-05", 140)  # D2: GROWCO leaves
+    rebuild(india, "2026-10-05T20:00:00")
+    assert len(run(user, india, T0 + timedelta(days=3)).fired) == 1
+    india.execute("DELETE FROM prices_daily WHERE date='2026-10-05'")
+    rebuild(india, "2026-10-06T09:00:00")  # built later, from the older data D1
+    assert run(user, india, T0 + timedelta(days=4)).fired == []
+    for alert in (a, metric):
+        status = alerts.get(user, alert["id"])["status"]
+        assert status["dataDate"] == d1 and "older" in status["message"] and "2026-10-05" in status["message"]
+    bar(india, "2026-10-05", 140)
+    bar(india, "2026-10-06", 160)  # D3: GROWCO back in, against D2 (out)
+    rebuild(india, "2026-10-06T20:00:00")
+    run(user, india, T0 + timedelta(days=4, hours=1))
+    entered = [e for e in alerts.inbox(user)["items"] if e["alert_id"] == a["id"]]
+    assert [e["title"] for e in entered] == ["“Pricey”: 1 entered", "“Pricey”: 1 left"]
+    assert [e["title"] for e in alerts.inbox(user)["items"] if e["alert_id"] == metric["id"]] == \
+        ["GROWCO.NS: your condition is now true"]
+
+
+def test_a_state_from_before_data_dated_epochs_restarts_as_a_baseline(user, india):
+    screen = screens.save_screen(user, {"name": "Pricey", "query": "Current price > 150"}, [])
+    a = alerts.save(user, {"kind": "screen", "screen": screen["id"]}, india)
+    legacy = {"epoch": "2026-10-02T20:00:00", "value": [], "prev_epoch": None, "prev_value": None}
+    with user:
+        user.execute("UPDATE alerts SET state=? WHERE id=?", (json.dumps(legacy), a["id"]))
+    assert run(user, india).fired == []  # members differ from the stored [], but no event
+    state = json.loads(user.execute("SELECT state FROM alerts WHERE id=?", (a["id"],)).fetchone()[0])
+    assert "|" in state["epoch"] and state["prev_epoch"] is None
+    bar(india, "2026-10-05", 140)
+    rebuild(india, "2026-10-05T20:00:00")
+    assert len(run(user, india, T0 + timedelta(days=3)).fired) == 1  # then it works as before
 
 
 def test_presets_can_be_watched(user, india):

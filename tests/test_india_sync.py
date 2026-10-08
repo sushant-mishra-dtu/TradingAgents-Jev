@@ -203,6 +203,17 @@ def test_selectors_filter_imports(make, conn):
     assert picked.done == 1 and picked.skipped == 4
 
 
+def test_a_forced_reimport_counts_unknown_tags_once(make, conn):
+    one = FIXTURES / "INTEGRATED_FILING_INDAS_1000001_24042026105714_WEB.xml"
+    s = make()
+    s.import_files([one])
+    s.force = True
+    for _ in range(2):
+        assert s.import_files([one]).done == 1
+    counts = conn.execute("SELECT count FROM xbrl_unknown_tags WHERE tag='SomeNewlyIntroducedMetric'")
+    assert [r[0] for r in counts] == [1]
+
+
 def test_the_nightly_run_starts_after_each_jobs_last_day(make, conn, tmp_path):
     s = make()
     s.sync_prices(date(2026, 9, 28), date(2026, 10, 1))
@@ -416,6 +427,27 @@ def test_a_lock_left_by_a_dead_sync_is_taken_over_and_released(cli_db):
     out = CliRunner().invoke(app, ["india", "import", str(FIXTURES)])
     assert out.exit_code == 0, out.output
     assert not lock.exists()
+
+
+def flat(text: str) -> str:
+    """Rich wraps at the terminal width; compare with the whitespace collapsed."""
+    return " ".join(text.split())
+
+
+def test_importing_a_missing_path_exits_non_zero_naming_it(cli_db, tmp_path):
+    missing = tmp_path / "no" / "such" / "folder"
+    out = CliRunner().invoke(app, ["india", "import", str(missing)])
+    assert out.exit_code == 1
+    assert flat(f"no such file or folder: {missing}") in flat(out.output)
+
+
+def test_importing_a_folder_without_xml_files_says_so(cli_db, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("not a filing", encoding="utf-8")
+    out = CliRunner().invoke(app, ["india", "import", str(empty)])
+    assert out.exit_code == 0, out.output
+    assert flat(f"no .xml files in {empty}") in flat(out.output)
 
 
 def test_a_missing_inbox_exits_non_zero_with_the_reason(cli_db, tmp_path):

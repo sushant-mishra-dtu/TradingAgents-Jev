@@ -229,18 +229,38 @@ def save_ratio(conn, body: dict) -> Ratio:
     return next(r for r in list_ratios(conn) if r.id == editing)
 
 
+def _uses(query, ratio_key: str, names: NameTable) -> bool:
+    """Whether a saved query names the custom ratio ``ratio_key``; one that no longer
+    parses holds nothing back."""
+    if not isinstance(query, str) or not query.strip():
+        return False
+    try:
+        node = parse(query, names)
+    except QueryError:
+        return False
+    return any(n.kind == "ratio" and n.key == ratio_key for n in references(node))
+
+
 def delete_ratio(conn, ratio_id: int) -> None:
     ratio_id = userdb.record_id(ratio_id, ScreenError("No such custom ratio."))
     ratios = list_ratios(conn)
     target = next((r for r in ratios if r.id == ratio_id), None)
     if target is None:
         raise ScreenError("No such custom ratio.")
-    asts = parse_ratios(ratios, name_table(ratios))
+    names = name_table(ratios)
+    asts = parse_ratios(ratios, names)
     users = [r.name for r in ratios if r.id != ratio_id and r.key in asts
              and any(n.kind == "ratio" and n.key == target.key for n in references(asts[r.key]))]
     if users:
         raise ScreenError(f"'{target.name}' is used by the custom ratio{'s' * (len(users) > 1)} "
                           f"{', '.join(users)}; change or delete those first.")
+    screens_using = [s["name"] for s in list_screens(conn) if _uses(s["query"], target.key, names)]
+    alerts_using = [r["name"] for r in conn.execute("SELECT name, params FROM alerts WHERE kind='metric' ORDER BY id")
+                    if _uses(json.loads(r["params"] or "{}").get("query"), target.key, names)]
+    if screens_using or alerts_using:
+        parts = [f"the {kind}{'s' * (len(found) > 1)} " + ", ".join(f"'{n}'" for n in found)
+                 for kind, found in (("screen", screens_using), ("alert", alerts_using)) if found]
+        raise ScreenError(f"'{target.name}' is used by {' and '.join(parts)}; change or delete those first.")
     with conn:
         conn.execute("DELETE FROM custom_ratios WHERE id=?", (ratio_id,))
 

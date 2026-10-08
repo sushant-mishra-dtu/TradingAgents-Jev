@@ -54,7 +54,10 @@ def db(tmp_path):
 
 
 def test_without_a_database_the_page_is_phase_1s():
-    assert profile.build_company_profile("ACME.NS") == yahoo.build_company_profile("ACME.NS")
+    p = profile.build_company_profile("ACME.NS")
+    assert p == yahoo.build_company_profile("ACME.NS")
+    borrowings = next(r for r in p["balanceSheet"]["rows"] if r["key"] == "borrowings")
+    assert borrowings["hint"] == "Total debt, lease liabilities included"  # Yahoo's figure, Yahoo's hint
 
 
 def test_an_empty_database_or_an_unknown_company_changes_nothing(tmp_path):
@@ -80,6 +83,8 @@ def test_filed_sections_replace_yahoos_and_say_so(db):
     assert p["balanceSheet"]["source"].startswith("NSE filings") and "lease" in p["balanceSheet"]["note"]
     borrowings = next(r for r in p["balanceSheet"]["rows"] if r["key"] == "borrowings")
     assert borrowings["values"] == [10000.0]
+    assert borrowings["hint"] == "Borrowings as filed, non-current plus current; lease liabilities excluded"
+    assert "included" not in borrowings["hint"]
     assert p["cashFlows"]["source"].startswith("NSE filings")
     fcf = next(r for r in p["cashFlows"]["rows"] if r["key"] == "free_cash_flow")
     assert fcf["values"] == [2000.0]

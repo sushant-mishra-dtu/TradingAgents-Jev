@@ -105,7 +105,7 @@ def _report(results, syncer) -> None:
                   f"Database: {store.db_path()} ({_size(store.db_path())}).", soft_wrap=True)
     for r in results:
         for note in r.notes:
-            console.print(f"[dim]{r.job}: {escape(note)}[/dim]")
+            console.print(f"[dim]{r.job}: {escape(note)}[/dim]", soft_wrap=True)
         for error in r.errors[:10]:
             console.print(f"[yellow]{r.job} failed:[/yellow] {escape(error)}", soft_wrap=True)
         if len(r.errors) > 10:
@@ -199,6 +199,10 @@ def import_files(paths: list[Path] = PATHS,
                                                    "for files whose names do not carry NSE's submission time"),
                  force: bool = FORCE):
     """Import results or shareholding XBRL files, whatever folder they are in."""
+    for path in paths:
+        if not path.exists():
+            console.print(f"[red]Stopped: no such file or folder: {escape(str(path))}[/red]", soft_wrap=True)
+            raise typer.Exit(code=1)
     _run(lambda s: s.import_files(paths, filed_at=filed_at), force=force)
 
 
