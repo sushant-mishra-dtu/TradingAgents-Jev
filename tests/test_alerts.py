@@ -169,7 +169,8 @@ def test_a_bad_condition_is_refused_with_its_position(user, india):
 def test_a_deleted_custom_ratio_is_reported_not_raised(user, india):
     ratio = screens.save_ratio(user, {"definition": "Double price = Current price * 2"})
     a = alerts.save(user, {"kind": "metric", "symbol": "GROWCO", "query": "Double price > 1"}, india)
-    screens.delete_ratio(user, ratio.id)
+    with user:  # deleted behind the app's back: delete_ratio refuses while an alert uses it
+        user.execute("DELETE FROM custom_ratios WHERE id=?", (ratio.id,))
     out = run(user, india)
     assert out.errors and not alerts.get(user, a["id"])["status"]["ok"]
 

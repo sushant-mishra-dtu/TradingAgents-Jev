@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tests import screener_db as fx
@@ -92,6 +94,24 @@ def test_a_ratio_used_by_another_cannot_be_deleted(user):
     assert screens.list_ratios(user) == []
     with pytest.raises(screens.ScreenError, match="No such custom ratio"):
         screens.delete_ratio(user, base.id)
+
+
+def test_a_ratio_used_by_saved_screens_and_metric_alerts_cannot_be_deleted(user):
+    ratio = add(user, "Base = Sales / Debt")
+    other = add(user, "Other = Sales * 2")
+    ratios = screens.list_ratios(user)
+    screens.save_screen(user, {"name": "A", "query": "Base > 1"}, ratios)
+    screens.save_screen(user, {"name": "B", "query": "Other > 1 AND Base < 9"}, ratios)
+    screens.save_screen(user, {"name": "C", "query": "Other > 1"}, ratios)
+    with user:
+        user.execute("INSERT INTO alerts (kind, name, params, created_at, updated_at) VALUES "
+                     "('metric', 'Watch base', ?, '', '')", (json.dumps({"query": "Base > 2"}),))
+        user.execute("INSERT INTO alerts (kind, name, params, created_at, updated_at) VALUES "
+                     "('metric', 'Broken', ?, '', '')", (json.dumps({"query": "Base >"}),))
+    with pytest.raises(screens.ScreenError) as caught:
+        screens.delete_ratio(user, ratio.id)
+    assert str(caught.value) == ("'Base' is used by the screens 'B', 'A' and the alert 'Watch base'; "
+                                 "change or delete those first.")
 
 
 def test_renaming_a_ratio_keeps_its_id(user):

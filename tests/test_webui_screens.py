@@ -227,6 +227,22 @@ def test_ratios_are_created_listed_used_and_deleted(base, built):
     assert call(base, "/api/ratios/999/delete", {})[0] == 400
 
 
+def test_a_ratio_used_by_a_screen_or_metric_alert_cannot_be_deleted(base, built):
+    r = call(base, "/api/ratios", {"definition": "Twice price = Current price * 2"})[1]
+    status, screen = call(base, "/api/screens", {"name": "Doubled", "query": "Twice price > 10"})
+    assert status == 200, screen
+    status, refused = call(base, f"/api/ratios/{r['id']}/delete", {})
+    assert status == 400 and refused["error"] == ("'Twice price' is used by the screen 'Doubled'; "
+                                                  "change or delete those first.")
+    assert call(base, f"/api/screens/{screen['id']}/delete", {})[0] == 200
+    status, alert = call(base, "/api/alerts", {"kind": "metric", "symbol": "GROWCO", "query": "Twice price > 10"})
+    assert status == 200, alert
+    status, refused = call(base, f"/api/ratios/{r['id']}/delete", {})
+    assert status == 400 and refused["error"] == (f"'Twice price' is used by the alert '{alert['name']}'; "
+                                                  "change or delete those first.")
+    assert [x["name"] for x in call(base, "/api/ratios")[1]] == ["Twice price"]
+
+
 def test_mutations_from_another_origin_are_refused(base):
     for path in ("/api/screens", "/api/ratios", "/api/screen/analyze", "/api/screens/1/delete"):
         code, reply = call(base, path, {"name": "x", "query": "ROCE > 1"}, headers={"Origin": "https://evil.example"})
