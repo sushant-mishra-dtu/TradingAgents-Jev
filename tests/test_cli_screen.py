@@ -49,6 +49,26 @@ def test_a_historical_snapshot_from_the_cli(india):
     assert run("india", "build-snapshot", "--as-of", "soon").exit_code != 0
 
 
+def test_build_snapshot_with_a_cutoff(india):
+    conn = store.connect(india)
+    with conn:
+        for table in ("filings", "financials"):
+            conn.execute(f"UPDATE {table} SET filed_at='2026-05-20T22:57:00' WHERE filing_id='GROWCO-FY2026'")
+    conn.close()
+    default = run("india", "build-snapshot", "--as-of", "2026-05-20")
+    assert default.exit_code == 0, default.output
+    assert "Snapshot 2026-05-20 (data to 2026-05-20): 2 securities (eq)" in default.output  # unchanged
+    result = run("screen", "run", "Sales last year > 1500 AND Sales last year < 2000", "--as-of", "2026-05-20")
+    assert "1 of 2 stocks match" in " ".join(result.output.split())  # the 22:57 filing counts
+    cut = run("india", "build-snapshot", "--as-of", "2026-05-20", "--cutoff", "15:30")
+    assert cut.exit_code == 0, cut.output
+    assert "(data to 2026-05-20, filings to 15:30 IST)" in cut.output
+    result = run("screen", "run", "Sales last year > 1500 AND Sales last year < 2000", "--as-of", "2026-05-20")
+    assert "0 of 2 stocks match" in " ".join(result.output.split())  # it does not
+    bad = run("india", "build-snapshot", "--cutoff", "15:30")
+    assert bad.exit_code == 1 and "needs --as-of" in bad.output
+
+
 def test_a_bad_query_points_at_the_problem(india):
     run("india", "build-snapshot")
     result = run("screen", "run", "Retrun on equity > 15")

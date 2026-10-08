@@ -223,7 +223,7 @@ def sync_all(universe: str = typer.Option("nifty500", "--universe",
         _evaluate_alerts(None)
 
 
-def _build_snapshot(as_of: str | None, universe: str | None) -> None:
+def _build_snapshot(as_of: str | None, universe: str | None, cutoff: str | None = None) -> None:
     from tradingagents.dataflows.config import get_config
     from tradingagents.screener import snapshot as snapshots
 
@@ -236,14 +236,15 @@ def _build_snapshot(as_of: str | None, universe: str | None) -> None:
                       TimeElapsedColumn(), console=console, transient=True) as progress:
             task = progress.add_task(f"Snapshot {as_of or 'live'}", total=None)
             result = snapshots.build_snapshot(
-                conn, as_of=as_of, universe=universe,
+                conn, as_of=as_of, universe=universe, cutoff=cutoff,
                 progress=lambda done, total: progress.update(task, completed=done, total=total))
     except snapshots.SnapshotError as exc:
         console.print(f"[red]No snapshot: {escape(str(exc))}[/red]", soft_wrap=True)
         raise typer.Exit(code=1) from None
     finally:
         conn.close()
-    console.print(f"Snapshot [bold]{result.as_of_date}[/bold] (data to {result.data_date}): {result.rows:,} "
+    at = f", filings to {cutoff} IST" if cutoff else ""
+    console.print(f"Snapshot [bold]{result.as_of_date}[/bold] (data to {result.data_date}{at}): {result.rows:,} "
                   f"securities ({result.universe}) in {result.elapsed:,.1f}s. Database now "
                   f"{result.db_bytes / 1e6:,.1f} MB ({result.added_bytes / 1e6:+,.1f} MB).", soft_wrap=True)
 
@@ -254,9 +255,12 @@ def build_snapshot(as_of: str = typer.Option(None, "--as-of",
                                                   "filed and prices traded by then (default: live, the latest)"),
                    universe: str = typer.Option(None, "--universe",
                                                 help="eq (listed EQ-series stocks, the default), listed, all, "
-                                                     "or comma-separated symbols")):
+                                                     "or comma-separated symbols"),
+                   cutoff: str = typer.Option(None, "--cutoff",
+                                              help="With --as-of: count only filings made by HH:MM IST that "
+                                                   "day, e.g. 15:30 for the market close (default: the whole day)")):
     """Precompute every screener metric for every stock: the snapshot screens run on."""
-    _build_snapshot(as_of, universe)
+    _build_snapshot(as_of, universe, cutoff)
 
 
 def _printable(text: str) -> str:

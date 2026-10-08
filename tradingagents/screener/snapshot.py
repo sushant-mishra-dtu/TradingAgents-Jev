@@ -8,8 +8,9 @@ two thousand stocks on every keystroke.
 ``as_of_date`` is ``live`` for the snapshot of the latest data (rebuilt by
 ``tradingagents india build-snapshot`` and at the end of ``india sync-all``), or
 a date for a historical one built with ``--as-of``. A historical snapshot reads
-the database point in time: only filings with ``filed_at`` on or before that day,
-prices up to that day, adjustments and corporate actions known by then. Kept side
+the database point in time: only filings with ``filed_at`` on or before that day
+(its end, or ``--cutoff HH:MM`` IST that day, to leave out filings made after the
+close), prices up to that day, adjustments and corporate actions known by then. Kept side
 by side, the snapshots let a screen run as of any of those dates, which is what a
 later backtest of a screen needs.
 
@@ -26,6 +27,7 @@ Missing data is NULL, never 0.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -38,6 +40,7 @@ from tradingagents.screener.company import dividends_covered, load_company
 LIVE = "live"
 UNIVERSES = ("eq", "listed", "all")
 TRADED_WINDOW_DAYS = 15
+_CUTOFF = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 EXTRA_COLUMNS = {"bse_code": "TEXT", "price_date": "TEXT", "financial": "INTEGER", "basis": "TEXT"}
 
 
@@ -146,18 +149,25 @@ def _db_bytes(conn) -> int:
 
 
 def build_snapshot(conn, as_of: str | date | None = None, universe: str | None = None,
-                   progress=None) -> BuildResult:
-    """Build (or rebuild) one snapshot. ``progress(done, total)`` is called as it goes."""
+                   progress=None, cutoff: str | None = None) -> BuildResult:
+    """Build (or rebuild) one snapshot. ``progress(done, total)`` is called as it goes.
+    ``cutoff`` (``HH:MM``, IST) ends a historical snapshot's day at that time instead of
+    at midnight, so filings made after it are left out; prices are that day's close."""
     began = time.monotonic()
     universe = universe or "eq"
+    if cutoff not in (None, "") and not _CUTOFF.match(str(cutoff)):
+        raise SnapshotError(f"--cutoff must be HH:MM (IST, 24-hour), not {cutoff!r}")
     if as_of not in (None, ""):
         day = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of))
         as_of, key = day.isoformat(), day.isoformat()
         if day > date.today():
             raise SnapshotError(f"--as-of {as_of} is in the future")
     else:
+        if cutoff:
+            raise SnapshotError("--cutoff needs --as-of: the live snapshot reads everything filed so far")
         as_of, key = None, LIVE
         day = newest_price_day(conn) or date.today()
+    point = f"{as_of}T{cutoff}:00" if cutoff else as_of
     securities = universe_rows(conn, universe, as_of, day)
     if not securities:
         raise SnapshotError("no securities to build a snapshot of; run `tradingagents india sync-securities` "
@@ -172,7 +182,7 @@ def build_snapshot(conn, as_of: str | date | None = None, universe: str | None =
            f"VALUES ({', '.join('?' * len(names))})")
     rows = []
     for i, security in enumerate(securities):
-        company = load_company(conn, security, day, as_of=as_of, dividends_known=known)
+        company = load_company(conn, security, day, as_of=point, dividends_known=known)
         values = {**compute_row(company), "as_of_date": key, "built_at": built_at}
         rows.append([values.get(n) for n in names])
         if progress:
