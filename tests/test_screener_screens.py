@@ -112,6 +112,8 @@ def test_a_ratio_used_by_saved_screens_and_metric_alerts_cannot_be_deleted(user)
         screens.delete_ratio(user, ratio.id)
     assert str(caught.value) == ("'Base' is used by the screens 'B', 'A' and the alert 'Watch base'; "
                                  "change or delete those first.")
+    with pytest.raises(screens.ScreenError, match="^'Other' is used by the screens 'C', 'B';"):
+        screens.delete_ratio(user, other.id)
 
 
 def test_renaming_a_ratio_keeps_its_id(user):

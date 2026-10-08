@@ -258,7 +258,7 @@ def delete_ratio(conn, ratio_id: int) -> None:
     alerts_using = [r["name"] for r in conn.execute("SELECT name, params FROM alerts WHERE kind='metric' ORDER BY id")
                     if _uses(json.loads(r["params"] or "{}").get("query"), target.key, names)]
     if screens_using or alerts_using:
-        parts = [f"the {kind}{'s' * (len(found) > 1)} {', '.join(f"'{n}'" for n in found)}"
+        parts = [f"the {kind}{'s' * (len(found) > 1)} " + ", ".join(f"'{n}'" for n in found)
                  for kind, found in (("screen", screens_using), ("alert", alerts_using)) if found]
         raise ScreenError(f"'{target.name}' is used by {' and '.join(parts)}; change or delete those first.")
     with conn:
