@@ -119,6 +119,8 @@ def overlay(data: CompanyData, india: dict) -> CompanyData:
     if india["quarterly"] and not india["cashflow"] and data.cashflow and not standalone:
         data.notes["cashflow"] = "Cash flows are Yahoo Finance's: no fourth-quarter filing in the database has them."
     if len(india["prices"]) >= 2:
+        if data.prices and data.quote.get("price") is not None:
+            data.quote_date = data.prices[-1][0]  # Yahoo's quote is from its own last bar, not ours
         data.prices, data.prices_from = india["prices"], None
         adjusted = sorted({e["type"] for e in india["price_events"]})
         first, last = india["prices"][0][0], india["prices"][-1][0]
@@ -142,8 +144,9 @@ def overlay(data: CompanyData, india: dict) -> CompanyData:
         data.financial = india["financial"]
     statements = [data.sources.get(s, "") for s in ("quarterly", "annual", "balance", "cashflow", "prices")]
     if any(s.startswith("NSE") for s in statements):
+        nse = "NSE filings" if any(s.startswith("NSE filings") for s in statements) else "NSE prices"
         yahoo_too = yahoo_quote or any(s and not s.startswith("NSE") for s in statements)
-        data.source = "NSE filings and Yahoo Finance" if yahoo_too else "NSE filings"
+        data.source = f"{nse} and Yahoo Finance" if yahoo_too else nse
     return data
 
 

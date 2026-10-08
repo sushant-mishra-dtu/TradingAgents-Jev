@@ -145,6 +145,44 @@ def test_the_chart_uses_adjusted_bhavcopy_prices_when_the_database_has_them(db):
     assert p["chart"]["source"].startswith("NSE bhavcopy") and "bonus" in p["chart"]["note"]
 
 
+def _acme_prices(db, rows):
+    conn = store.connect(db)
+    store.upsert_prices(conn, [("INE999Z01019", day, 1, 1, 1, close, 100, "EQ", "NSE bhavcopy") for day, close in rows])
+    conn.commit()
+    conn.close()
+
+
+def test_the_header_price_keeps_the_date_of_the_quote_it_shows(db):
+    # The database's closes end on 30 September; Yahoo's quote (250) is from its 2 October bar.
+    _acme_prices(db, [("2026-09-29", 240.0), ("2026-09-30", 245.0)])
+    p = profile.build_company_profile("ACME.NS")
+    assert p["chart"]["dates"][-1] == "2026-09-30"
+    assert p["price"]["value"] == 250.0 and p["price"]["date"] == "2026-10-02"
+
+
+def test_without_a_yahoo_quote_the_header_shows_the_databases_last_close(db):
+    FakeTicker.tickers["ACME.NS"] = {**ACME, "info": {k: v for k, v in ACME["info"].items()
+                                                      if k not in ("currentPrice", "regularMarketChange",
+                                                                   "regularMarketChangePercent")}}
+    _acme_prices(db, [("2026-09-29", 240.0), ("2026-09-30", 245.0)])
+    p = profile.build_company_profile("ACME.NS")
+    assert p["price"]["value"] == 245.0 and p["price"]["date"] == "2026-09-30"
+
+
+def test_a_company_with_prices_but_no_filings_is_not_said_to_come_from_filings(db):
+    conn = store.connect(db)
+    store.upsert_securities(conn, [{"isin": "INE111A01011", "nse_symbol": "PRICEONLY", "name": "Price Only Ltd",
+                                    "status": "listed"}])
+    store.upsert_prices(conn, [("INE111A01011", "2026-09-29", 1, 1, 1, 240.0, 100, "EQ", "NSE bhavcopy"),
+                               ("INE111A01011", "2026-09-30", 1, 1, 1, 245.0, 100, "EQ", "NSE bhavcopy")])
+    conn.commit()
+    conn.close()
+    FakeTicker.tickers["PRICEONLY.NS"] = ACME
+    p = profile.build_company_profile("PRICEONLY.NS")
+    assert p["chart"]["source"].startswith("NSE bhavcopy") and p["india"]["filings"] == 0
+    assert p["source"]["name"] == "NSE prices and Yahoo Finance"
+
+
 def test_a_bank_gets_the_lenders_layout_from_its_filing_format(db):
     p = profile.build_company_profile("SAMPLEBANK.NS")
     assert p["financial"] is True

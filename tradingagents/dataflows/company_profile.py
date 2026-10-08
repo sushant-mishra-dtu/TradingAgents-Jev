@@ -97,6 +97,7 @@ class CompanyData:
     cashflow: Statement = field(default_factory=dict)  # fiscal years
     prices: list[tuple[str, float, float | None]] = field(default_factory=list)  # (day, close, volume), oldest first
     prices_from: str | None = None  # another listing of the same shares, when the prices are its
+    quote_date: str | None = None  # the day of quote["price"], when ``prices`` come from another source
     source: str = "Yahoo Finance"
     fetched: datetime = field(default_factory=datetime.now)
     # Where a section came from when it is not ``source`` (quarterly, annual,
@@ -381,12 +382,13 @@ def _facts(data: CompanyData, roes: list[float], price, financial: bool) -> dict
 def _price(data: CompanyData) -> dict:
     q = data.quote
     last = data.prices[-1] if data.prices else None
-    price = _first(as_number(q.get("price")), last and last[1])
+    quoted = as_number(q.get("price"))
+    price = _first(quoted, last and last[1])
     previous = as_number(q.get("previous_close"))
     change = _first(as_number(q.get("change")), _sub(price, previous))
     change_pct = _first(as_number(q.get("change_pct")), _pct(change, previous))
-    return {"value": price, "change": _rounded(change), "changePct": _rounded(change_pct),
-            "date": last[0] if last else None}
+    day = data.quote_date if quoted is not None and data.quote_date else last and last[0]
+    return {"value": price, "change": _rounded(change), "changePct": _rounded(change_pct), "date": day}
 
 
 def _source(data: CompanyData, section: str) -> str:
