@@ -18,10 +18,12 @@ refused too.
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 import zipfile
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -107,6 +109,64 @@ def inbox_dir() -> Path:
 
 def raw_dir() -> Path:
     return Path(get_config()["data_cache_dir"]).expanduser() / "india" / "raw"
+
+
+@contextmanager
+def sync_lock(path: Path | None = None) -> Iterator[Path]:
+    """One sync at a time, across processes: the throttle is per process, so two
+    syncs at once would ask the archive twice as often. Holds ``.sync.lock`` in
+    the raw folder with this process's PID, and refuses (``SyncAborted``, naming
+    the holder) while a live process holds it. A lock left by a process that has
+    died is taken over."""
+    path = path or raw_dir() / ".sync.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                holder = int(path.read_text(encoding="ascii").strip())
+            except (OSError, ValueError):
+                raise SyncAborted(f"{path} exists without a PID; delete it if no India sync is running") from None
+            if _alive(holder):
+                raise SyncAborted(f"another India sync is running (PID {holder}); "
+                                  f"wait for it to finish, or delete {path} if it is not") from None
+            path.unlink(missing_ok=True)
+            continue
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(str(os.getpid()))
+        try:
+            yield path
+        finally:
+            path.unlink(missing_ok=True)
+        return
+    raise SyncAborted(f"could not take {path}; another sync took it first")
+
+
+def _alive(pid: int) -> bool:
+    """Whether a process with this PID is running. Never signals it: on Windows
+    ``os.kill(pid, 0)`` would terminate it."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: it exists, as another user's
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def default_client() -> ArchiveClient:

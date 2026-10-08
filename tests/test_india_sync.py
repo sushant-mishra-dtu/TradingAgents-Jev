@@ -5,9 +5,13 @@ everything else, as the archive does on a holiday. The client's throttle,
 retries and 403/429 handling run against a fake session and a fake clock.
 """
 
+import os
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -212,15 +216,17 @@ def test_the_nightly_run_starts_after_each_jobs_last_day(make, conn, tmp_path):
 
 class Session:
     def __init__(self, script):
-        self.script, self.headers, self.calls = list(script), {}, []
+        self.script, self.headers, self.calls, self.kwargs, self.closed = list(script), {}, [], [], []
 
-    def get(self, url, timeout):
+    def get(self, url, timeout, **kwargs):
         self.calls.append(url)
+        self.kwargs.append(kwargs)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
         status, body, headers = item if len(item) == 3 else (*item, {})
-        return SimpleNamespace(status_code=status, content=body, headers=headers)
+        return SimpleNamespace(status_code=status, content=body, headers=headers,
+                               close=lambda: self.closed.append(url))
 
 
 def client(tmp_path, script, **kw):
@@ -240,6 +246,72 @@ def test_requests_are_throttled_per_host_and_identify_the_caller(tmp_path):
     c.get("https://archives.nseindia.com/b.csv", "b.csv")
     assert slept == [1.0]
     assert c.session.headers["User-Agent"].startswith("TradingAgents/")
+
+
+def test_the_interval_never_drops_below_one_second(tmp_path):
+    assert ArchiveClient(tmp_path, interval=0.2).interval == 1.0
+    assert ArchiveClient(tmp_path, interval=0).interval == 1.0
+    assert ArchiveClient(tmp_path, interval=5).interval == 5.0
+    config_module._config["india_request_interval"] = 0.2
+    assert sync.default_client().interval == 1.0
+
+
+def test_a_configured_user_agent_is_a_contact_added_to_ours(tmp_path):
+    ua = ArchiveClient(tmp_path, user_agent="me@example.com").session.headers["User-Agent"]
+    assert ua.startswith("TradingAgents/") and ua.endswith("contact: me@example.com")
+    browser = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+    assert ArchiveClient(tmp_path, user_agent=browser).session.headers["User-Agent"].startswith("TradingAgents/")
+    sneaky = ArchiveClient(tmp_path, user_agent="me@example.com\r\nX-Forwarded-For: 1.2.3.4\x00" + "x" * 500)
+    ua = sneaky.session.headers["User-Agent"]
+    assert not any(ord(ch) < 32 or ord(ch) == 127 for ch in ua)
+    assert len(ua.split(" contact: ", 1)[1]) == 200
+    config_module._config["india_user_agent"] = "me@example.com"
+    assert sync.default_client().session.headers["User-Agent"].endswith("contact: me@example.com")
+
+
+def test_a_redirect_off_the_archive_host_stops_the_run_unfollowed(tmp_path):
+    source = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    target = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+    c, _ = client(tmp_path, [(302, b"", {"Location": target})])
+    with pytest.raises(SourceBlocked) as caught:
+        c.get(source, "e.csv")
+    assert source in str(caught.value) and target in str(caught.value)
+    assert c.session.calls == [source]
+
+
+def test_a_redirect_within_the_host_fails_the_file_unfollowed(tmp_path):
+    c, _ = client(tmp_path, [(301, b"", {"Location": "/content/moved/x.csv"})])
+    with pytest.raises(FetchFailed, match="/content/moved/x.csv"):
+        c.get("https://archives.nseindia.com/content/x.csv", "x.csv")
+    assert c.session.calls == ["https://archives.nseindia.com/content/x.csv"] and not (tmp_path / "x.csv").exists()
+
+
+def test_no_request_follows_a_redirect(tmp_path):
+    c, _ = client(tmp_path, [(200, b"a"), (403, b"Access Denied"), (200, b"equity list"), (404, b"")])
+    c.get("https://archives.nseindia.com/a.csv", "a.csv")
+    c.get("https://archives.nseindia.com/old.zip", "old.zip")
+    c.get("https://archives.nseindia.com/gone.zip", "gone.zip")
+    assert len(c.session.kwargs) == 4
+    assert all(kw.get("allow_redirects") is False for kw in c.session.kwargs)
+
+
+@pytest.mark.parametrize("url", ["https://www.nseindia.com/api/x", "https://nsearchives.nseindia.com/x",
+                                 "https://www.bseindia.com/x", "https://archives.nseindia.com.example.net/x"])
+def test_only_the_archive_host_is_ever_asked(tmp_path, url):
+    c, _ = client(tmp_path, [(200, b"never sent")])
+    with pytest.raises(SourceBlocked, match="not an allowed archive host"):
+        c.get(url, "x")
+    assert c.session.calls == [] and c.requests == 0
+
+
+def test_the_canary_is_asked_once_per_run_and_never_downloaded(tmp_path):
+    c, _ = client(tmp_path, [(403, b"Access Denied"), (200, b"equity list"), (403, b"Access Denied"),
+                             (403, b"Access Denied")])
+    for name in ("a.zip", "b.zip", "c.zip"):
+        assert c.get(f"https://archives.nseindia.com/old/{name}", name) is None
+    assert c.session.calls.count(c.canary_url) == 1 and len(c.session.calls) == 4
+    canary = c.session.kwargs[c.session.calls.index(c.canary_url)]
+    assert canary["stream"] is True and c.session.closed == [c.canary_url]
 
 
 def test_a_cached_file_is_never_fetched_again(tmp_path):
@@ -315,6 +387,37 @@ def test_a_bad_date_is_a_usage_error(cli_db):
     assert out.exit_code == 2
 
 
+def test_a_sync_redirected_off_the_archive_exits_non_zero_naming_the_target(cli_db, monkeypatch):
+    target = "https://nsearchives.nseindia.com/content/cm/moved.csv.zip"
+    session = Session([(302, b"", {"Location": target})])
+    monkeypatch.setattr(sync, "default_client", lambda: ArchiveClient(
+        sync.raw_dir(), session=session, sleep=lambda s: None))
+    out = CliRunner().invoke(app, ["india", "sync-prices", "--from", "2026-10-01", "--to", "2026-10-01"])
+    assert out.exit_code == 1 and target in " ".join(out.output.split())
+    assert [urlsplit(u).hostname for u in session.calls] == ["archives.nseindia.com"]
+
+
+def test_a_second_sync_while_the_lock_is_held_stops_with_the_holders_pid(cli_db):
+    lock = sync.raw_dir() / ".sync.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(str(os.getpid()), encoding="ascii")  # a live process
+    out = CliRunner().invoke(app, ["india", "import", str(FIXTURES)])
+    assert out.exit_code == 1 and f"PID {os.getpid()}" in " ".join(out.output.split())
+    assert lock.read_text(encoding="ascii") == str(os.getpid())  # still the holder's
+
+
+def test_a_lock_left_by_a_dead_sync_is_taken_over_and_released(cli_db):
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    assert not sync._alive(dead.pid) and sync._alive(os.getpid())
+    lock = sync.raw_dir() / ".sync.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(str(dead.pid), encoding="ascii")
+    out = CliRunner().invoke(app, ["india", "import", str(FIXTURES)])
+    assert out.exit_code == 0, out.output
+    assert not lock.exists()
+
+
 def test_a_missing_inbox_exits_non_zero_with_the_reason(cli_db, tmp_path):
     out = CliRunner().invoke(app, ["india", "sync-results", "--dir", str(tmp_path / "nowhere")])
-    assert out.exit_code == 1 and "NSE serves them to browsers only" in out.output.replace("\n", " ")
+    assert out.exit_code == 1 and "NSE serves them to browsers only" in " ".join(out.output.split())

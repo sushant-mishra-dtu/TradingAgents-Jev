@@ -148,6 +148,15 @@ def _no_jev(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _own_cli_prefs(monkeypatch, tmp_path):
+    """The CLI's remembered answers in a file of the test's own, never the
+    developer's ~/.tradingagents/cli_prefs.json: ``get_user_selections`` saves
+    them on every run. ``cli.selections`` imports the functions, which read the
+    module global at call time, so patching it here covers them."""
+    monkeypatch.setattr("cli.prefs._PREFS_PATH", tmp_path / "cli_prefs.json")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_config():
     """Reset the global dataflows config before and after each test.
 
