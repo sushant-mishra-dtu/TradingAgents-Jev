@@ -564,16 +564,19 @@ class TestOutput:
         assert not check.review and "Sell" in block
         assert extract_rating(f"{decision}\n\n{block}") == "Buy"
 
-    def test_a_rating_word_in_a_cited_heading_does_not_change_an_unlabelled_rating(self):
-        """A free-text decision without a label is read from its only rating
-        word; a report heading cited in the block must not add another."""
+    def test_a_rating_word_in_a_cited_heading_does_not_become_a_rating(self):
+        """A rating is read only from its label (rating.py), so a free-text
+        decision without one has none and the block says REVIEW; a report
+        heading cited in the block must not supply a rating either."""
         decision = ("I recommend going Overweight.\n\n## Investment Thesis\n"
                     "- Hyperscaler capex rose sharply this year [fact] [key:capex]")
         reports = {"fundamentals": "## Sell-side estimates\nConsensus revenue is unchanged."}
         check = cc.run_check(FakeJev(), decision, reports, INSTRUMENT)
+        assert extract_rating(decision) is None
         block = cc.render_claim_check(check, extract_rating(decision))
         assert '"Sell-side estimates"' in block
-        assert extract_rating(f"{decision}\n\n{block}") == "Overweight"
+        assert block.splitlines()[-1].startswith("**Rating after claim check**: REVIEW")
+        assert extract_rating(f"{decision}\n\n{block}") is None
 
     def test_without_a_readable_rating_the_block_says_review(self):
         _, check = _check(THESIS.replace("[key:margin]", "[key:revenue]"))
@@ -643,7 +646,7 @@ def _pm_state():
         past_context="", investment_plan="Research plan.", trader_investment_plan="Trader plan.",
         risk_debate_state={
             "history": "Risk debate history.", "aggressive_history": "", "conservative_history": "",
-            "neutral_history": "", "judge_decision": "", "current_aggressive_response": "",
+            "neutral_history": "", "current_aggressive_response": "",
             "current_conservative_response": "", "current_neutral_response": "", "count": 1,
         },
     )
@@ -661,13 +664,14 @@ def _pm_llm(thesis):
 
 @pytest.mark.unit
 class TestPortfolioManagerNode:
-    def test_the_checked_decision_is_both_the_judge_decision_and_the_final_one(self, monkeypatch):
+    def test_the_checked_decision_is_the_final_one_and_its_review_the_runs_rating(self, monkeypatch):
         client = FakeJev()
         monkeypatch.setattr(cc, "jev_client", lambda: client)
         result = create_portfolio_manager(_pm_llm(THESIS))(_pm_state())
 
         final = result["final_trade_decision"]
-        assert final == result["risk_debate_state"]["judge_decision"]
+        # The typed rating was Buy; the contradicted thesis sends the run to review.
+        assert result["final_rating"] == RATING_REVIEW
         assert final.startswith("**Rating**: Buy")
         assert "**Claim Check**: " in final
         assert final.rstrip().endswith("1 claim contradicted by the analyst reports)")
@@ -680,3 +684,4 @@ class TestPortfolioManagerNode:
             rating=PortfolioRating.BUY, executive_summary="Accumulate.", investment_thesis=THESIS,
         ))
         assert parse_rating(result["final_trade_decision"]) == "Buy"
+        assert result["final_rating"] == "Buy"

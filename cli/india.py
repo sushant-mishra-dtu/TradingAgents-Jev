@@ -3,8 +3,8 @@
 Every sync resumes where the last one stopped (``--force`` redoes what is
 done), shows its progress, and logs each day or file it touches. A day or file
 that fails is reported and the run goes on; the command exits non-zero only when
-the run itself could not go on (a host refusing us, the network down, a bad
-argument).
+the run itself could not go on (a host refusing us or redirecting off the
+archive, the network down, another sync already running, a bad argument).
 """
 
 from __future__ import annotations
@@ -61,8 +61,17 @@ def _symbols(value: str | None) -> list[str] | None:
 
 
 def _run(work, *, force: bool = False):
-    """Open the database, run ``work(syncer)`` under a progress display, print what
-    each job did, and turn a systemic failure into exit code 1."""
+    """Take the sync lock, open the database, run ``work(syncer)`` under a progress
+    display, print what each job did, and turn a systemic failure into exit code 1."""
+    try:
+        with india_sync.sync_lock():
+            _run_locked(work, force=force)
+    except india_sync.SyncAborted as exc:  # the lock is held by another sync
+        console.print(f"[red]Stopped: {escape(str(exc))}[/red]", soft_wrap=True)
+        raise typer.Exit(code=1) from None
+
+
+def _run_locked(work, *, force: bool):
     conn = store.connect()
     try:
         with Progress(TextColumn("[bold]{task.description}"), BarColumn(), MofNCompleteColumn(),
@@ -73,7 +82,7 @@ def _run(work, *, force: bool = False):
                 results = work(syncer)
             except india_sync.SyncAborted as exc:
                 progress.stop()
-                console.print(f"[red]Stopped: {escape(str(exc))}[/red]")
+                console.print(f"[red]Stopped: {escape(str(exc))}[/red]", soft_wrap=True)
                 raise typer.Exit(code=1) from None
         _report(results if isinstance(results, list) else [results], syncer)
     finally:

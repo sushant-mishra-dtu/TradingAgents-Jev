@@ -49,7 +49,7 @@ import logging
 import math
 import threading
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.vendors.india import store
@@ -803,7 +803,7 @@ def market_open(now: datetime | None = None) -> bool:
     """Whether NSE's normal session is on: 09:15 to 15:30 India time, Monday to
     Friday (exchange holidays are not known here; a quote that does not move then
     fires nothing)."""
-    ist = (now or datetime.now(timezone.utc)).astimezone(IST)
+    ist = (now or datetime.now(UTC)).astimezone(IST)
     if ist.weekday() >= 5:
         return False
     (h0, m0), (h1, m1) = MARKET_HOURS
@@ -835,7 +835,7 @@ class PricePoller:
     def __init__(self, minutes: int, *, fetch=None, clock=None, user_path=None):
         self.minutes = max(MIN_POLL_MINUTES, int(minutes))
         self.fetch = fetch or _yahoo_quotes
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: datetime.now(UTC))
         self.user_path = user_path
         self.last: dict | None = None
         self._stop = threading.Event()

@@ -20,12 +20,11 @@ from pathlib import Path
 
 from cli.display import ANALYST_ORDER, AnalystWallTimeTracker, MessageBuffer, process_chunk
 from cli.stats_handler import StatsCallbackHandler
-from tradingagents.agents.rating import is_review, parse_rating
+from tradingagents.agents.rating import is_review, parse_rating, run_rating
 from tradingagents.backtest import run_backtest, summarize
 from tradingagents.dataflows.symbols import safe_ticker_component
-from tradingagents.decision_log import TradingMemoryLog
 from tradingagents.graph.analyst_execution import build_analyst_execution_plan
-from tradingagents.reporting import write_report_tree
+from tradingagents.memory import TradingMemoryLog
 
 PENDING, RUNNING, DONE, FAILED, CANCELLED = "pending", "running", "done", "failed", "cancelled"
 
@@ -179,9 +178,12 @@ class AnalysisJob:
             )
             plan = build_analyst_execution_plan(self.analysts)
             tracker = AnalystWallTimeTracker(plan)
+            # The analysts start together.
             with self.lock:
-                self.buffer.update_agent_status(plan.specs[0].agent_node, "in_progress")
-            tracker.mark_started(self.analysts[0])
+                for spec in plan.specs:
+                    self.buffer.update_agent_status(spec.agent_node, "in_progress")
+            for spec in plan.specs:
+                tracker.mark_started(spec.key)
 
             init_state = graph.create_run_state(
                 self.ticker, self.trade_date, self.asset_type, self.portfolio
@@ -195,15 +197,17 @@ class AnalysisJob:
 
             final_state: dict = {}
             try:
-                for chunk in graph.graph.stream(graph.checkpoint_input(init_state), **args):
+                for messages, chunk in graph.stream_run(graph.checkpoint_input(init_state), **args):
                     if self._cancel.is_set():
                         raise _Cancelled
                     with self.lock:
-                        process_chunk(self.buffer, chunk, wall_time_tracker=tracker)
-                        if chunk.get("sentiment_judgments"):
+                        process_chunk(self.buffer, chunk, wall_time_tracker=tracker, messages=messages)
+                        if chunk and chunk.get("sentiment_judgments"):
                             self.judgments = chunk["sentiment_judgments"]
-                    # Chunks are per-node deltas; merge them into the full state.
-                    final_state.update(chunk)
+                    # A step inside an analyst's graph carries messages only, or
+                    # its report; merge what each step has into the full state.
+                    if chunk:
+                        final_state.update(chunk)
                 graph.record_decision(self.ticker, self.trade_date, final_state)
                 graph.clear_checkpoint_on_success(
                     self.ticker, self.trade_date, self.asset_type, self.portfolio
@@ -211,11 +215,8 @@ class AnalysisJob:
             finally:
                 graph.end_checkpoint()
 
-            rating = graph.process_signal(final_state.get("final_trade_decision", ""))
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = (Path(self.config["results_dir"]) / "reports"
-                         / f"{safe_ticker_component(self.ticker)}_{stamp}")
-            report_path = write_report_tree(final_state, self.ticker, save_path)
+            rating = run_rating(final_state)
+            report_path = graph.save_reports(final_state, self.ticker)
 
             with self.lock:
                 for agent in self.buffer.agent_status:
@@ -513,10 +514,11 @@ def _report_header(path: Path) -> tuple[str, str | None]:
     ticker, trade_date = path.parent.name.rsplit("_", 2)[0], None
     try:
         with path.open(encoding="utf-8") as f:
-            head = [next(f, "") for _ in range(4)]
+            head = [next(f, "") for _ in range(12)]
     except OSError:
         return ticker, None
     for line in head:
+        line = line.removeprefix("- ")  # the header lists what produced the run
         if line.startswith("# Trading Analysis Report:"):
             ticker = line.split(":", 1)[1].strip()
         elif line.startswith("Analysis date:"):
@@ -533,6 +535,7 @@ def load_report_sections(report: SavedReport) -> list[tuple[str, str]]:
         return [(h.group(1).strip(), text[h.end():end].strip())
                 for h, end in zip(heads, ends, strict=True)]
     state = json.loads(report.path.read_text(encoding="utf-8"))
+    # Logs written before 0.6 name the Trader's plan trader_investment_decision.
     state.setdefault("trader_investment_plan", state.get("trader_investment_decision"))
     return state_sections(state)
 
@@ -554,7 +557,8 @@ def state_sections(state: dict) -> list[tuple[str, str]]:
         ("II. Research Team Decision", join([
             ("Bull Researcher", debate.get("bull_history")),
             ("Bear Researcher", debate.get("bear_history")),
-            ("Research Manager", debate.get("judge_decision")),
+            # Logs written before 0.6 keep the decisions in the debate states.
+            ("Research Manager", state.get("investment_plan") or debate.get("judge_decision")),
         ])),
         ("III. Trading Team Plan", join([("Trader", state.get("trader_investment_plan"))])),
         ("IV. Risk Management Team Decision", join([
@@ -562,7 +566,9 @@ def state_sections(state: dict) -> list[tuple[str, str]]:
             ("Conservative Analyst", risk.get("conservative_history")),
             ("Neutral Analyst", risk.get("neutral_history")),
         ])),
-        ("V. Portfolio Manager Decision", join([("Portfolio Manager", risk.get("judge_decision"))])),
+        ("V. Portfolio Manager Decision", join([
+            ("Portfolio Manager", state.get("final_trade_decision") or risk.get("judge_decision")),
+        ])),
     ]
     return [(title, body) for title, body in sections if body]
 

@@ -5,7 +5,7 @@ prompt, so the model reports on data it was given rather than inventing posts:
 
   1. News headlines: Yahoo Finance
   2. StockTwits messages: the cashtag stream, with Bullish/Bearish tags
-  3. Reddit posts: r/wallstreetbets, r/stocks, r/investing
+  3. Reddit posts: r/wallstreetbets, r/stocks, r/investing, or crypto communities for a crypto pair
 
 Each source is trimmed to the analysis window. With a TypeSafe key, the social
 posts are screened by Jev first (see post_screen). These feeds serve recent items
@@ -51,7 +51,13 @@ from tradingagents.agents.tools import get_news
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.feed import Feed
 from tradingagents.dataflows.router import route_to_vendor
-from tradingagents.dataflows.vendors.reddit import fetch_reddit_feed, fetch_reddit_posts
+from tradingagents.dataflows.vendors.reddit import (
+    CRYPTO_SUBREDDITS,
+    DEFAULT_SUBREDDITS,
+    fetch_reddit_feed,
+    fetch_reddit_posts,
+    subreddits_for,
+)
 from tradingagents.dataflows.vendors.stocktwits import (
     fetch_stocktwits_feed,
     fetch_stocktwits_messages,
@@ -115,6 +121,7 @@ def create_sentiment_analyst(llm):
         ticker = state["company_of_interest"]
         end_date = state["trade_date"]
         start_date = _seven_days_back(end_date)
+        subreddits = subreddits_for(ticker)
 
         client = jev_client()
         if client is None:
@@ -131,15 +138,15 @@ def create_sentiment_analyst(llm):
                 ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
             )
             reddit_block = fetch_reddit_posts(
-                ticker, start_date=start_date, end_date=end_date, screen=screen
+                ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
             )
         else:
             with client:
-                feeds = _fetch_feeds(ticker, start_date, end_date)
+                feeds = _fetch_feeds(ticker, start_date, end_date, subreddits)
                 judged = _judge(client, feeds, ticker)
             if judged is not None:
                 report_text, payload = _judged_report(
-                    feeds, judged, ticker, start_date, end_date,
+                    feeds, judged, ticker, start_date, end_date, subreddits,
                     lambda message: run_prompt(state, message, narrative_llm, _narrative_text),
                 )
                 return {
@@ -160,6 +167,7 @@ def create_sentiment_analyst(llm):
             news_block=news_block,
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
+            subreddits=subreddits,
         )
         report_text = run_prompt(state, system_message, structured_llm, render_sentiment_report)
 
@@ -175,7 +183,9 @@ def _narrative_text(narrative: SentimentNarrative) -> str:
     return narrative.narrative
 
 
-def _fetch_feeds(ticker: str, start_date: str, end_date: str) -> dict[str, Feed]:
+def _fetch_feeds(
+    ticker: str, start_date: str, end_date: str, subreddits: tuple[str, ...] = DEFAULT_SUBREDDITS,
+) -> dict[str, Feed]:
     """The three sources as items, each also holding its legacy prompt block."""
     news = route_to_vendor("get_news_feed", ticker, start_date, end_date)
     if isinstance(news, str):  # the router's sentinel when no vendor could serve it
@@ -185,7 +195,9 @@ def _fetch_feeds(ticker: str, start_date: str, end_date: str) -> dict[str, Feed]
         "stocktwits": fetch_stocktwits_feed(
             ticker, limit=30, start_date=start_date, end_date=end_date
         ),
-        "reddit": fetch_reddit_feed(ticker, start_date=start_date, end_date=end_date),
+        "reddit": fetch_reddit_feed(
+            ticker, subreddits, start_date=start_date, end_date=end_date
+        ),
     }
 
 
@@ -207,7 +219,9 @@ def _judge(client, feeds: dict[str, Feed], ticker: str):
         return None
 
 
-def _judged_report(feeds, judged, ticker, start_date, end_date, write_narrative) -> tuple[str, dict]:
+def _judged_report(
+    feeds, judged, ticker, start_date, end_date, subreddits, write_narrative,
+) -> tuple[str, dict]:
     """The report, with its header computed from ``judged`` and an LLM narrative,
     and the judgments as plain data for the run state."""
     from tradingagents.agents.sentiment_judgments import (
@@ -224,6 +238,7 @@ def _judged_report(feeds, judged, ticker, start_date, end_date, write_narrative)
         feeds=feeds,
         judged=judged,
         agg=agg,
+        subreddits=subreddits,
     )
     narrative = write_narrative(system_message)
     basis = (
@@ -240,6 +255,18 @@ def _judged_report(feeds, judged, ticker, start_date, end_date, write_narrative)
     return report, judgments_payload(judged, agg, (start_date, end_date))
 
 
+def _reddit_heading(subreddits: tuple[str, ...]) -> str:
+    """The Reddit section's heading and the character of the subreddits searched."""
+    if subreddits == DEFAULT_SUBREDDITS:
+        character = "r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term"
+    elif len(subreddits) > len(CRYPTO_SUBREDDITS):
+        character = f"r/{subreddits[0]} leans toward the coin's holders; r/CryptoCurrency and r/CryptoMarkets are broader"
+    else:
+        character = "r/CryptoCurrency and r/CryptoMarkets are broad crypto communities"
+    return (f"### Reddit posts — {', '.join(f'r/{sub}' for sub in subreddits)} (past 7 days)\n"
+            f"Community discussion, without vote or comment counts. Subreddit character matters ({character}).")
+
+
 def _build_system_message(
     *,
     ticker: str,
@@ -248,6 +275,7 @@ def _build_system_message(
     news_block: str,
     stocktwits_block: str,
     reddit_block: str,
+    subreddits: tuple[str, ...] = DEFAULT_SUBREDDITS,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
@@ -268,8 +296,7 @@ Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish /
 {stocktwits_block}
 <end_of_stocktwits>
 
-### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion, without vote or comment counts. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
+{_reddit_heading(subreddits)}
 
 <start_of_reddit>
 {reddit_block}
@@ -315,7 +342,9 @@ def _source_stance(source, feeds, agg) -> str:
     return "unavailable" if feeds[source].unavailable else "no kept items"
 
 
-def _build_judged_system_message(*, ticker, start_date, end_date, feeds, judged, agg) -> str:
+def _build_judged_system_message(
+    *, ticker, start_date, end_date, feeds, judged, agg, subreddits=DEFAULT_SUBREDDITS,
+) -> str:
     """The system message when every item was judged and the header computed in code."""
     from tradingagents.agents.sentiment_judgments import (
         describe_drops,
@@ -363,8 +392,7 @@ Fast-moving signal. A message may carry its author's own Bullish/Bearish tag.
 {stocktwits_block}
 <end_of_stocktwits>
 
-### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion, without vote or comment counts. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
+{_reddit_heading(subreddits)}
 
 <start_of_reddit>
 {reddit_block}

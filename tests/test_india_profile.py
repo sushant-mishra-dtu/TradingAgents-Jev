@@ -156,9 +156,9 @@ def test_when_yahoo_has_nothing_the_page_stands_on_the_filings(db, monkeypatch):
 
 def test_an_unknown_symbol_with_no_filings_still_raises(db, monkeypatch):
     from tradingagents.dataflows.errors import NoMarketDataError
-    from tradingagents.dataflows.vendors.yahoo import ohlcv
+    from tradingagents.dataflows.vendors.yahoo import common
 
-    monkeypatch.setattr(ohlcv, "vendor_reachable", lambda url: True)
+    monkeypatch.setattr(common, "vendor_reachable", lambda url: True)
     FakeTicker.tickers = {}
     with pytest.raises(NoMarketDataError):
         profile.build_company_profile("NOSUCH.NS")

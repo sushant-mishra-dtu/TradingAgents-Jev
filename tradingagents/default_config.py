@@ -11,10 +11,15 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
+    "TRADINGAGENTS_DEEP_THINK_PROVIDER":       "deep_think_provider",
+    "TRADINGAGENTS_QUICK_THINK_PROVIDER":      "quick_think_provider",
+    "TRADINGAGENTS_DEEP_THINK_BACKEND_URL":    "deep_think_backend_url",
+    "TRADINGAGENTS_QUICK_THINK_BACKEND_URL":   "quick_think_backend_url",
     "TRADINGAGENTS_LLM_BACKEND_URL":      "backend_url",
     "TRADINGAGENTS_OUTPUT_LANGUAGE":      "output_language",
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
+    "TRADINGAGENTS_MAX_TOOL_ROUNDS":      "max_tool_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
@@ -82,134 +87,165 @@ def _apply_env_overrides(config: dict) -> dict:
     return config
 
 
-DEFAULT_CONFIG = _apply_env_overrides({
-    "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR") or os.path.join(_TRADINGAGENTS_HOME, "logs"),
-    "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR") or os.path.join(_TRADINGAGENTS_HOME, "cache"),
-    "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH") or os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
-    # The India data layer's SQLite database: NSE securities, prices, corporate
-    # actions and the results and shareholding filings imported into it. Raw
-    # downloads are cached under data_cache_dir/india/raw.
-    "india_db_path": os.getenv("TRADINGAGENTS_INDIA_DB") or os.path.join(_TRADINGAGENTS_HOME, "india", "india.db"),
-    "india_request_interval": 1.0,   # at most one request per second per host
-    "india_user_agent": None,        # None = "TradingAgents/<version> (India data layer; +<repo>)"
-    # Stock screener (`tradingagents screen ...`, the /screens page). Metrics
-    # snapshots live in the India database; saved screens, custom ratios,
-    # watchlists, alerts and the alert inbox are yours, so they live in their own
-    # file and survive a rebuilt India database.
-    "screener_db_path": os.getenv("TRADINGAGENTS_SCREENER_DB") or os.path.join(_TRADINGAGENTS_HOME, "screener", "screens.db"),
-    "screener_universe": "eq",       # eq: listed EQ-series stocks; listed: every listed series; all
-    "alert_poll_minutes": 0,         # delayed-quote polls for price alerts in market hours; 0 = off
-    # Optional cap on the number of resolved memory log entries. When set,
-    # the oldest resolved entries are pruned once this limit is exceeded.
-    # Pending entries are never pruned. None disables rotation entirely.
-    "memory_log_max_entries": None,
-    # LLM settings
-    "llm_provider": "openai",
-    "deep_think_llm": "gpt-6-sol",
-    "quick_think_llm": "gpt-6-luna",
-    # When None, each provider's client falls back to its own default endpoint
-    # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
-    # The CLI overrides this per provider when the user picks one. Keeping a
-    # provider-specific URL here would leak (e.g. OpenAI's /v1 was previously
-    # being forwarded to Gemini, producing malformed request URLs).
-    "backend_url": None,
-    # Provider-specific thinking configuration
-    "google_thinking_level": None,      # "high", "minimal", etc.
-    "openai_reasoning_effort": None,    # "medium", "high", "low"
-    "anthropic_effort": None,           # "high", "medium", "low"
-    # Sampling temperature, forwarded to every provider when set. None leaves
-    # each provider at its own default. Lower values reduce run-to-run
-    # variation on models that honor it; reasoning models largely ignore it
-    # and no setting makes LLM output bit-identical across runs (see README).
-    "temperature": None,
-    # SDK retry budget forwarded to every provider chat client. None leaves each
-    # provider/SDK at its own default (usually 2). Raise it to ride out bursty
-    # 429 throttling on rate-limited deployments instead of aborting a run (#1091).
-    "llm_max_retries": None,
-    # Cap on output tokens forwarded to every provider chat client. None leaves
-    # each provider at its own default. Set it to bound a model that emits
-    # unbounded reasoning/output and hangs or trips a gateway idle timeout
-    # (e.g. some deepseek-v4-flash deployments, #1204).
-    "max_tokens": None,
-    # TypeSafe Jev typed judgments (pip install "tradingagents[jev]"). Used only
-    # when TYPESAFE_API_KEY is set; set False to keep the pre-Jev behaviour even
-    # then. The Sentiment Analyst uses it to filter news and social items and to
-    # compute the sentiment score from per-item stances; the debates use it to
-    # stop once a round adds nothing new (max_*_rounds stays the upper bound)
-    # and to brief the Research Manager on whose case held up. The Portfolio Manager
-    # uses it to check the claims in its Investment Thesis against the analyst
-    # reports; jev_claim_check False turns that check off alone, since a
-    # contradicted thesis sends the decision to REVIEW rather than a trade.
-    # `tradingagents learn` uses it to judge a finished backtest's reports.
-    # jev_model None uses the SDK default (TYPESAFE_DEFAULT_MODEL, else
-    # jev-latest); pin a versioned id such as "jev-1.13.0" once thresholds are
-    # tuned against it.
-    "jev_enabled": True,
-    "jev_claim_check": True,
-    "jev_model": None,
-    # Checkpoint/resume: when True, LangGraph saves state after each node
-    # so a crashed run can resume from the last successful step.
-    "checkpoint_enabled": True,
-    # Output language for analyst reports and final decision
-    # Internal agent debate stays in English for reasoning quality
-    "output_language": "English",
-    # Debate and discussion settings
-    "max_debate_rounds": 1,
-    "max_risk_discuss_rounds": 1,
-    "max_recur_limit": 100,
-    # News / data fetching parameters
-    # Increase for longer lookback strategies or to broaden macro coverage;
-    # decrease to reduce token usage in agent prompts.
-    "news_article_limit": 20,             # max articles per ticker (ticker-news)
-    "global_news_article_limit": 10,      # max articles for global/macro news
-    "global_news_lookback_days": 7,       # macro news lookback window
-    # Search queries used by get_global_news for macro headlines. Extend or
-    # replace to broaden geographic / sector coverage.
-    "global_news_queries": [
-        "Federal Reserve interest rates inflation",
-        "S&P 500 earnings GDP economic outlook",
-        "geopolitical risk trade war sanctions",
-        "ECB Bank of England BOJ central bank policy",
-        "oil commodities supply chain energy",
-    ],
-    # Data vendor configuration
-    # Category-level configuration (default for all tools in category).
-    # The configured value is the exact vendor chain — requests are NOT silently
-    # routed to vendors you didn't choose. For ordered fallback, list several,
-    # e.g. "yfinance,alpha_vantage". "default" uses all available vendors.
-    "data_vendors": {
-        "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
-        "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
-        "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
-        "prediction_markets": "polymarket",  # Options: polymarket (keyless)
-    },
-    # Tool-level configuration (takes precedence over category-level)
-    "tool_vendors": {
-        # Example: "get_stock_data": "alpha_vantage",  # Override category default
-    },
-    # Benchmark for alpha calculation in the reflection layer.
-    # ``benchmark_ticker`` (when set) overrides the suffix map for all
-    # tickers; leave it None to use ``benchmark_map`` for auto-detection
-    # based on the ticker's exchange suffix. SPY remains the US default
-    # so the reflection label keeps reading "Alpha vs SPY" for US tickers
-    # while non-US tickers get their regional index automatically.
-    # Trading days after the analysis date over which a decision's outcome is
-    # measured, for reflection and for the backtest figures.
-    "holding_period_days": 5,
-    "benchmark_ticker": None,
-    "benchmark_map": {
-        ".NS":  "^NSEI",       # NSE India (Nifty 50)
-        ".BO":  "^BSESN",      # BSE India (Sensex)
-        ".T":   "^N225",       # Tokyo (Nikkei 225)
-        ".HK":  "^HSI",        # Hong Kong (Hang Seng)
-        ".L":   "^FTSE",       # London (FTSE 100)
-        ".TO":  "^GSPTSE",     # Toronto (TSX Composite)
-        ".AX":  "^AXJO",       # Australia (ASX 200)
-        ".SS":  "000001.SS",   # Shanghai (SSE Composite)
-        ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
-        ".SA":  "^BVSP",       # B3 Brazil (Ibovespa)
-        "":     "SPY",         # default for US-listed tickers (no suffix)
-    },
-})
+def build_default_config() -> dict:
+    """The built-in defaults with the TRADINGAGENTS_* environment folded in.
+
+    Read when the package is imported, as DEFAULT_CONFIG; call it again to see
+    the environment as it is now.
+    """
+    return _apply_env_overrides({
+        "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR") or os.path.join(_TRADINGAGENTS_HOME, "logs"),
+        "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR") or os.path.join(_TRADINGAGENTS_HOME, "cache"),
+        "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH") or os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
+        # The India data layer's SQLite database: NSE securities, prices, corporate
+        # actions and the results and shareholding filings imported into it. Raw
+        # downloads are cached under data_cache_dir/india/raw.
+        "india_db_path": os.getenv("TRADINGAGENTS_INDIA_DB") or os.path.join(_TRADINGAGENTS_HOME, "india", "india.db"),
+        "india_request_interval": 1.0,   # seconds between requests per host; at least 1 (lower is raised to 1)
+        "india_user_agent": None,        # your contact (email or URL), appended to "TradingAgents/<version> (...)"
+        # Stock screener (`tradingagents screen ...`, the /screens page). Metrics
+        # snapshots live in the India database; saved screens, custom ratios,
+        # watchlists, alerts and the alert inbox are yours, so they live in their own
+        # file and survive a rebuilt India database.
+        "screener_db_path": os.getenv("TRADINGAGENTS_SCREENER_DB") or os.path.join(_TRADINGAGENTS_HOME, "screener", "screens.db"),
+        "screener_universe": "eq",       # eq: listed EQ-series stocks; listed: every listed series; all
+        "alert_poll_minutes": 0,         # delayed-quote polls for price alerts in market hours; 0 = off
+        # Optional cap on the number of resolved memory log entries. When set,
+        # the oldest resolved entries are pruned once this limit is exceeded.
+        # Pending entries are never pruned. None disables rotation entirely.
+        "memory_log_max_entries": None,
+        # LLM settings
+        "llm_provider": "openai",
+        "deep_think_llm": "gpt-6-sol",
+        "quick_think_llm": "gpt-6-luna",
+        # When None, each provider's client falls back to its own default endpoint
+        # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
+        # The CLI overrides this per provider when the user picks one. Keeping a
+        # provider-specific URL here would leak (e.g. OpenAI's /v1 was previously
+        # being forwarded to Gemini, producing malformed request URLs).
+        "backend_url": None,
+        # A tier may name its own provider and endpoint (#1440): the quick tier serves
+        # the analysts, researchers, debaters and trader, the deep tier the managers.
+        # None means the tier uses llm_provider and backend_url.
+        "quick_think_provider": None,
+        "deep_think_provider": None,
+        "quick_think_backend_url": None,
+        "deep_think_backend_url": None,
+        # Provider-specific thinking configuration
+        "google_thinking_level": None,      # "high", "minimal", etc.
+        "openai_reasoning_effort": None,    # "medium", "high", "low"
+        "anthropic_effort": None,           # "high", "medium", "low"
+        # Sampling temperature, forwarded to every provider when set. None leaves
+        # each provider at its own default. Lower values reduce run-to-run
+        # variation on models that honor it; reasoning models largely ignore it
+        # and no setting makes LLM output bit-identical across runs (see README).
+        "temperature": None,
+        # SDK retry budget forwarded to every provider chat client. None leaves each
+        # provider/SDK at its own default (usually 2). Raise it to ride out bursty
+        # 429 throttling on rate-limited deployments instead of aborting a run (#1091).
+        "llm_max_retries": None,
+        # Cap on output tokens forwarded to every provider chat client. None leaves
+        # each provider at its own default. Set it to bound a model that emits
+        # unbounded reasoning/output and hangs or trips a gateway idle timeout
+        # (e.g. some deepseek-v4-flash deployments, #1204).
+        "max_tokens": None,
+        # TypeSafe Jev typed judgments (pip install "tradingagents[jev]"). Used only
+        # when TYPESAFE_API_KEY is set; set False to keep the pre-Jev behaviour even
+        # then. The Sentiment Analyst uses it to filter news and social items and to
+        # compute the sentiment score from per-item stances; the debates use it to
+        # stop once a round adds nothing new (max_*_rounds stays the upper bound)
+        # and to brief the Research Manager on whose case held up. The Portfolio Manager
+        # uses it to check the claims in its Investment Thesis against the analyst
+        # reports; jev_claim_check False turns that check off alone, since a
+        # contradicted thesis sends the decision to REVIEW rather than a trade.
+        # `tradingagents learn` uses it to judge a finished backtest's reports.
+        # jev_model None uses the SDK default (TYPESAFE_DEFAULT_MODEL, else
+        # jev-latest); pin a versioned id such as "jev-1.13.0" once thresholds are
+        # tuned against it.
+        "jev_enabled": True,
+        "jev_claim_check": True,
+        "jev_model": None,
+        # Checkpoint/resume: when True, LangGraph saves state after each node
+        # so a crashed run can resume from the last successful step.
+        "checkpoint_enabled": True,
+        # Output language for analyst reports and final decision
+        # Internal agent debate stays in English for reasoning quality
+        "output_language": "English",
+        # Debate and discussion settings
+        "max_debate_rounds": 1,
+        "max_risk_discuss_rounds": 1,
+        "max_recur_limit": 100,
+        # Rounds of tool calls an analyst may make before it is asked for its report.
+        "max_tool_rounds": 20,
+        # News / data fetching parameters
+        # Increase for longer lookback strategies or to broaden macro coverage;
+        # decrease to reduce token usage in agent prompts.
+        "news_article_limit": 20,             # max articles per ticker (ticker-news)
+        "global_news_article_limit": 10,      # max articles for global/macro news
+        "global_news_lookback_days": 7,       # macro news lookback window
+        # Search queries used by get_global_news for macro headlines. Extend or
+        # replace to broaden geographic / sector coverage.
+        "global_news_queries": [
+            "Federal Reserve interest rates inflation",
+            "S&P 500 earnings GDP economic outlook",
+            "geopolitical risk trade war sanctions",
+            "ECB Bank of England BOJ central bank policy",
+            "oil commodities supply chain energy",
+        ],
+        # Data vendor configuration
+        # Category-level configuration (default for all tools in category).
+        # The configured value is the exact vendor chain — requests are NOT silently
+        # routed to vendors you didn't choose. For ordered fallback, list several,
+        # e.g. "yfinance,alpha_vantage". "default" uses all available vendors.
+        "data_vendors": {
+            "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
+            "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
+            # Statements come from SEC EDGAR as filed (US filers), then Yahoo; the
+        # overview and insider tools, which SEC EDGAR does not serve, from Yahoo.
+        "fundamental_data": "sec_edgar,yfinance",  # Options: sec_edgar, alpha_vantage, yfinance
+            "news_data": "yfinance",             # Options: alpha_vantage, yfinance
+            "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
+            "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+        },
+        # Tool-level configuration (takes precedence over category-level)
+        "tool_vendors": {
+            # Example: "get_stock_data": "alpha_vantage",  # Override category default
+        },
+        # Benchmark for alpha calculation in the reflection layer.
+        # ``benchmark_ticker`` (when set) overrides the suffix map for all
+        # tickers; leave it None to use ``benchmark_map`` for auto-detection
+        # based on the ticker's exchange suffix. SPY remains the US default
+        # so the reflection label keeps reading "Alpha vs SPY" for US tickers
+        # while non-US tickers get their regional index automatically.
+        # Trading days after the analysis date over which a decision's outcome is
+        # measured, for reflection and for the backtest figures.
+        "holding_period_days": 5,
+        "benchmark_ticker": None,
+        "benchmark_map": {
+            ".NS":  "^NSEI",       # NSE India (Nifty 50)
+            ".BO":  "^BSESN",      # BSE India (Sensex)
+            ".T":   "^N225",       # Tokyo (Nikkei 225)
+            ".TW":  "^TWII",       # Taiwan (TAIEX)
+            ".TWO": "^TWII",       # Taipei OTC (TPEx has no Yahoo index; TAIEX)
+            ".KS":  "^KS11",       # Korea (KOSPI)
+            ".KQ":  "^KQ11",       # Korea (KOSDAQ)
+            ".HK":  "^HSI",        # Hong Kong (Hang Seng)
+            ".SI":  "^STI",        # Singapore (Straits Times)
+            ".L":   "^FTSE",       # London (FTSE 100)
+            ".DE":  "^GDAXI",      # Germany (DAX)
+            ".PA":  "^FCHI",       # Paris (CAC 40)
+            ".AS":  "^AEX",        # Amsterdam (AEX)
+            ".SW":  "^SSMI",       # Switzerland (SMI)
+            ".MI":  "FTSEMIB.MI",  # Milan (FTSE MIB)
+            ".TO":  "^GSPTSE",     # Toronto (TSX Composite)
+            ".AX":  "^AXJO",       # Australia (ASX 200)
+            ".SS":  "000001.SS",   # Shanghai (SSE Composite)
+            ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
+            ".SA":  "^BVSP",       # B3 Brazil (Ibovespa)
+            "":     "SPY",         # default for US-listed tickers (no suffix)
+        },
+
+    })
+
+
+DEFAULT_CONFIG = build_default_config()

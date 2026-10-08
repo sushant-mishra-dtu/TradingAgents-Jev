@@ -21,7 +21,7 @@ from cli import main as cli_main
 from cli.webui import server
 from cli.webui.jobs import JobRegistry
 from tests import phase4_db as p4
-from tests.test_webui_server import SETTINGS, FakeGraph
+from tests.test_webui_server import OPENER, SETTINGS, FakeGraph
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.vendors.india import profile as india_profile, store
 from tradingagents.graph import trading_graph
@@ -80,7 +80,7 @@ def call(base, path, body=None, headers=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json", **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=10) as res:
+        with OPENER.open(req, timeout=10) as res:
             raw = res.read()
             if res.headers.get("Content-Type", "").startswith("application/json"):
                 return res.status, json.loads(raw)
@@ -373,5 +373,5 @@ def test_the_company_workbook_downloads(base, india):
 
 def test_new_pages_are_served(base):
     for page in ("/watchlists", "/alerts", "/industry"):
-        req = urllib.request.urlopen(base + page, timeout=5)
+        req = OPENER.open(base + page, timeout=5)
         assert req.status == 200 and b"app.js" in req.read()

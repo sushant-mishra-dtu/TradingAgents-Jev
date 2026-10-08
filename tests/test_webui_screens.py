@@ -19,7 +19,7 @@ from cli import main as cli_main
 from cli.webui import server
 from cli.webui.jobs import JobRegistry
 from tests import screener_db as fx
-from tests.test_webui_server import SETTINGS, FakeGraph
+from tests.test_webui_server import OPENER, SETTINGS, FakeGraph
 from tradingagents.dataflows.vendors.india import store
 from tradingagents.graph import trading_graph
 from tradingagents.screener import snapshot
@@ -75,7 +75,7 @@ def call(base, path, body=None, headers=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(base + path, data=data, headers={"Content-Type": "application/json", **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=10) as res:
+        with OPENER.open(req, timeout=10) as res:
             return res.status, json.loads(res.read())
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read())
@@ -87,7 +87,7 @@ def test_the_screens_page_is_served(base):
 
 
 def call_raw(base, path):
-    with urllib.request.urlopen(base + path, timeout=10) as res:
+    with OPENER.open(base + path, timeout=10) as res:
         return res.status, res.read()
 
 
