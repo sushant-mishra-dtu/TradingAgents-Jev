@@ -369,7 +369,6 @@ def _rm_state():
             "bull_history": "\nBull Analyst: up",
             "bear_history": "\nBear Analyst: down",
             "current_response": "Bear Analyst: down",
-            "judge_decision": "",
             "count": 4,
             "new_argument": [None, None, 0.1, 0.1],
         },
@@ -472,7 +471,7 @@ def test_portfolio_manager_keeps_the_risk_scores():
             "history": "h", "aggressive_history": "a", "conservative_history": "c",
             "neutral_history": "n", "latest_speaker": "Neutral",
             "current_aggressive_response": "a", "current_conservative_response": "c",
-            "current_neutral_response": "n", "judge_decision": "", "count": 3,
+            "current_neutral_response": "n", "count": 3,
             "new_argument": [None, None, None],
         },
     }

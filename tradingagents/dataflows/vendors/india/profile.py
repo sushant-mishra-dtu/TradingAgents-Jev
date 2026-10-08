@@ -27,7 +27,7 @@ import time
 from datetime import date, datetime
 
 from tradingagents.dataflows.company_profile import CompanyData, build_profile, period_label, scale
-from tradingagents.dataflows.errors import NoMarketDataError, VendorRateLimitError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.india import store
 from tradingagents.dataflows.vendors.india.statements import load_statements
@@ -297,7 +297,7 @@ def build_company_profile(symbol: str, basis: str | None = None) -> dict:
     try:
         data = yahoo.fetch_company_data(symbol)
         yahoo_note = ""
-    except (NoMarketDataError, VendorRateLimitError) as exc:
+    except (NoMarketDataError, VendorUnavailableError) as exc:
         data = CompanyData(symbol=canonical, source="NSE filings", fetched=datetime.now())
         yahoo_note = f"Yahoo Finance had nothing to add ({exc}); the quote and ratios that need it are blank."
     profile = _with_india(build_profile(overlay(data, india)), india, data)

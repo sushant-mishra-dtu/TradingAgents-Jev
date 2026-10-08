@@ -1,8 +1,9 @@
 """Running one analysis from the CLI: build the graph, stream it into the live view, save the report."""
 
-import datetime
 import os
+import sys
 import time
+import webbrowser
 from functools import wraps
 from pathlib import Path
 
@@ -19,16 +20,15 @@ from cli.display import (
     process_chunk,
     update_display,
 )
-from cli.selections import get_user_selections
+from cli.selections import depth_from_env, get_user_selections, unattended_gaps
 from cli.stats_handler import StatsCallbackHandler
-from tradingagents.agents.rating import is_review
+from tradingagents.agents.rating import is_review, run_rating
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import (
     build_analyst_execution_plan,
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.reporting import write_report_tree
 
 
 def _run_directory(config: dict, ticker: str, trade_date: str) -> Path:
@@ -64,17 +64,19 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     # Research depth sets both round counts, but an explicit env override
     # (TRADINGAGENTS_MAX_DEBATE_ROUNDS / _MAX_RISK_ROUNDS) wins over the
     # interactive selection — leave the env-applied value in place (#977).
-    for env_var, key in (("TRADINGAGENTS_MAX_DEBATE_ROUNDS", "max_debate_rounds"),
-                         ("TRADINGAGENTS_MAX_RISK_ROUNDS", "max_risk_discuss_rounds")):
-        if os.environ.get(env_var):
-            # The depth prompt still appeared (it is skipped only when both are
+    rounds = (("TRADINGAGENTS_MAX_DEBATE_ROUNDS", "max_debate_rounds"),
+              ("TRADINGAGENTS_MAX_RISK_ROUNDS", "max_risk_discuss_rounds"))
+    depth_was_asked = not depth_from_env()
+    for env_var, key in rounds:
+        if not os.environ.get(env_var):
+            config[key] = selections["research_depth"]
+        elif depth_was_asked:
+            # The depth question appeared (it is skipped only when both are
             # set), so say which half of the answer the environment overrode.
             console.print(
                 f"[green]✓ {key} from environment:[/green] {config[key]} "
                 f"(set by {env_var}, so the research depth you chose does not apply to it)"
             )
-        else:
-            config[key] = selections["research_depth"]
     config["quick_think_llm"] = selections["quick_think_llm"]
     config["deep_think_llm"] = selections["deep_think_llm"]
     config["backend_url"] = selections["backend_url"]
@@ -91,9 +93,19 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     return config
 
 
-def run_analysis(checkpoint: bool | None = None, portfolio=None):
-    # First get all user selections
-    selections = get_user_selections()
+def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
+    flags = flags or {}
+    # With no terminal nothing can answer a prompt: name every question still
+    # open before any model is called, rather than stopping at the first one.
+    if not (sys.stdin and sys.stdin.isatty()):
+        gaps = unattended_gaps(flags)
+        if gaps:
+            console.print("[red]No terminal to answer the setup questions. Set:[/red]")
+            for gap in gaps:
+                console.print(f"  {gap}")
+            raise typer.Exit(code=1)
+
+    selections = get_user_selections(flags)
 
     config = _build_run_config(selections, checkpoint)
 
@@ -187,9 +199,10 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None):
         )
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-        first_analyst = analyst_execution_plan.specs[0].agent_node
-        message_buffer.update_agent_status(first_analyst, "in_progress")
-        analyst_wall_time_tracker.mark_started(selected_analyst_keys[0])
+        # The analysts start together.
+        for spec in analyst_execution_plan.specs:
+            message_buffer.update_agent_status(spec.agent_node, "in_progress")
+            analyst_wall_time_tracker.mark_started(spec.key)
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
         spinner_text = (
@@ -197,8 +210,9 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None):
         )
         update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
 
-        # The same initial state propagate() builds: settled decision log, past
-        # context and resolved instrument identity.
+        # The same initial state propagate() builds, with the resolved
+        # instrument identity; the graph's Memory Log step settles past
+        # decisions and loads their lessons alongside the analysts.
         init_agent_state = graph.create_run_state(
             selections["ticker"], selections["analysis_date"], selections["asset_type"], portfolio
         )
@@ -221,12 +235,14 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None):
         # try/finally tears the checkpointer down even if the stream raises.
         trace = []
         try:
-            for chunk in graph.graph.stream(graph.checkpoint_input(init_agent_state), **args):
-                process_chunk(message_buffer, chunk, wall_time_tracker=analyst_wall_time_tracker)
+            for messages, chunk in graph.stream_run(graph.checkpoint_input(init_agent_state), **args):
+                process_chunk(message_buffer, chunk, wall_time_tracker=analyst_wall_time_tracker,
+                              messages=messages)
 
                 update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-                trace.append(chunk)
+                if chunk is not None:   # a step inside an analyst's graph: messages only
+                    trace.append(chunk)
 
             # Streamed chunks are per-node deltas, not full state. Merge them
             # so every report field populated across the run is present.
@@ -264,7 +280,7 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None):
 
     # A decision nobody can read, or one the claim check sent to review, is not
     # a position. Say so here rather than leaving the run to look like a normal result.
-    if is_review(graph.process_signal(final_state.get("final_trade_decision", ""))):
+    if is_review(run_rating(final_state)):
         console.print(
             "[yellow]The final decision has no tradeable rating (none could be read, "
             "or the claim check sent it to review), so this run is recorded for review "
@@ -273,28 +289,80 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None):
         )
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
-    if save_choice in ("Y", "YES", ""):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _offer_reports(final_state, graph, selections["ticker"],
+                   save=flags.get("save"), show=flags.get("show"), html=flags.get("html"))
+
+
+def _yes(question: str) -> bool:
+    return typer.prompt(question, default="Y").strip().upper() in ("Y", "YES", "")
+
+
+def _graphical_browser():
+    """A browser that opens a page in its own window on this machine, or None.
+
+    Over SSH the page sits on the remote machine, and a terminal browser (lynx,
+    w3m, elinks) would take over the terminal, so neither is offered.
+    """
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return None
+    try:
+        browser = webbrowser.get()
+    except webbrowser.Error:
+        return None
+    if type(browser) is webbrowser.GenericBrowser or isinstance(browser, webbrowser.Elinks):
+        return None
+    return browser
+
+
+def _open_page(page: Path) -> None:
+    """Offer to open the saved page in a browser window, and say where it is if opening fails."""
+    browser = _graphical_browser()
+    if browser is None or not _yes("Open it in your browser?"):
+        return
+    try:
+        opened = browser.open(page.as_uri())
+    except (webbrowser.Error, OSError):
+        opened = False
+    if not opened:
+        console.print(f"  [dim]Could not open a browser; the page is at:[/dim] {page}")
+
+
+def _offer_reports(final_state, graph, ticker, save=None, show=None, html=None):
+    """Save the report tree and show it; ``save``/``show``/``html`` answer the questions when given.
+
+    A saved report includes the HTML page unless ``html`` is False. Someone
+    answering the save question at the prompt is also asked about the page and
+    offered to open it; a run whose flags answer the save question asks neither.
+    """
+    asked = save is None
+    if asked:
+        save = typer.prompt("Save report?", default="Y").strip().upper() in ("Y", "YES", "")
+    if save:
         # Under results_dir, not the working directory: in Docker the working
         # directory is inside the container and the report goes with it, while
         # results_dir is the mounted volume the rest of the run already writes to.
-        default_path = (Path(config["results_dir"]) / "reports"
-                        / f"{safe_ticker_component(selections['ticker'])}_{timestamp}")
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
-        save_path = Path(save_path_str)
+        save_path = graph.default_report_path(ticker)
+        if asked:   # someone at the prompt may pick another folder
+            save_path = Path(typer.prompt(
+                "Save path (press Enter for default)", default=str(save_path)
+            ).strip())
+        if html is None:
+            html = _yes("Also save it as an HTML page?") if asked else True
+        saved = False
         try:
-            report_file = write_report_tree(final_state, selections["ticker"], save_path)
+            report_file = graph.save_reports(final_state, ticker, save_path, html=html)
+            saved = True
             console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
+        if saved and html:
+            page = (save_path / "complete_report.html").resolve()
+            console.print(f"  [dim]HTML report:[/dim] {page.name}")
+            if asked:
+                _open_page(page)
 
-    # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
+    if show is None:
+        show = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper() in ("Y", "YES", "")
+    if show:
         display_complete_report(final_state)

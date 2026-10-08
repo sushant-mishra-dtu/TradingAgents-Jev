@@ -404,8 +404,8 @@ def display_complete_report(final_state):
             research.append(("Bull Researcher", debate["bull_history"]))
         if debate.get("bear_history"):
             research.append(("Bear Researcher", debate["bear_history"]))
-        if debate.get("judge_decision"):
-            research.append(("Research Manager", debate["judge_decision"]))
+        if final_state.get("investment_plan"):
+            research.append(("Research Manager", final_state["investment_plan"]))
         if research:
             console.print(Panel("[bold]II. Research Team Decision[/bold]", border_style="magenta"))
             for title, content in research:
@@ -431,10 +431,10 @@ def display_complete_report(final_state):
             for title, content in risk_reports:
                 console.print(Panel(Markdown(content), title=title, border_style="blue", padding=(1, 2)))
 
-        # V. Portfolio Manager Decision
-        if risk.get("judge_decision"):
-            console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
-            console.print(Panel(Markdown(risk["judge_decision"]), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
+    # V. Portfolio Manager Decision
+    if final_state.get("final_trade_decision"):
+        console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
+        console.print(Panel(Markdown(final_state["final_trade_decision"]), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
 
 
 def update_research_team_status(status, buffer=None):
@@ -446,15 +446,21 @@ def update_research_team_status(status, buffer=None):
         buffer.update_agent_status(agent, status)
 
 
-def process_chunk(buffer, chunk, wall_time_tracker=None):
+def process_chunk(buffer, chunk, wall_time_tracker=None, messages=None):
     """Fold one streamed graph chunk into ``buffer``.
 
     Records new messages and tool calls, and moves agent statuses and report
     sections forward. The terminal dashboard and the web UI both call this, so
     they read a run the same way.
+
+    ``messages`` are the step's messages as ``TradingAgentsGraph.stream_run``
+    yields them (the chunk's own by default). A ``None`` chunk is a step inside
+    an analyst's graph, which carries messages only.
     """
+    if messages is None:
+        messages = (chunk or {}).get("messages", [])
     # Process all messages in chunk, deduplicating by message ID
-    for message in chunk.get("messages", []):
+    for message in messages:
         msg_id = getattr(message, "id", None)
         if msg_id is not None:
             if msg_id in buffer._processed_message_ids:
@@ -472,6 +478,9 @@ def process_chunk(buffer, chunk, wall_time_tracker=None):
                 else:
                     buffer.add_tool_call(tool_call.name, tool_call.args)
 
+    if chunk is None:
+        return
+
     # Update analyst statuses based on report state (runs on every chunk)
     update_analyst_statuses(
         buffer,
@@ -484,7 +493,7 @@ def process_chunk(buffer, chunk, wall_time_tracker=None):
         debate_state = chunk["investment_debate_state"]
         bull_hist = debate_state.get("bull_history", "").strip()
         bear_hist = debate_state.get("bear_history", "").strip()
-        judge = debate_state.get("judge_decision", "").strip()
+        judge = (chunk.get("investment_plan") or "").strip()
 
         # Only update status when there's actual content
         if bull_hist or bear_hist:
@@ -519,7 +528,7 @@ def process_chunk(buffer, chunk, wall_time_tracker=None):
         agg_hist = risk_state.get("aggressive_history", "").strip()
         con_hist = risk_state.get("conservative_history", "").strip()
         neu_hist = risk_state.get("neutral_history", "").strip()
-        judge = risk_state.get("judge_decision", "").strip()
+        judge = (chunk.get("final_trade_decision") or "").strip()
 
         if agg_hist:
             if buffer.agent_status.get("Aggressive Analyst") != "completed":
@@ -569,22 +578,17 @@ ANALYST_REPORT_MAP = {
 
 
 def update_analyst_statuses(message_buffer, chunk, wall_time_tracker=None):
-    """Update analyst statuses based on accumulated report state.
+    """Update analyst statuses from the reports filed so far.
 
-    Logic:
-    - Store new report content from the current chunk if present
-    - Check accumulated report_sections (not just current chunk) for status
-    - Analysts with reports = completed
-    - First analyst without report = in_progress
-    - Remaining analysts without reports = pending
-    - When all analysts done, set Bull Researcher to in_progress
+    The analysts run together: each is in progress until its own report lands.
+    When every selected analyst has filed, the research debate is in progress.
     """
     selected = message_buffer.selected_analysts
-    found_active = False
 
     if wall_time_tracker is not None:
         sync_analyst_tracker_from_chunk(wall_time_tracker, chunk)
 
+    all_filed = True
     for analyst_key in ANALYST_ORDER:
         if analyst_key not in selected:
             continue
@@ -596,20 +600,15 @@ def update_analyst_statuses(message_buffer, chunk, wall_time_tracker=None):
         if chunk.get(report_key):
             message_buffer.update_report_section(report_key, chunk[report_key])
 
-        # Determine status from accumulated sections, not just current chunk
-        has_report = bool(message_buffer.report_sections.get(report_key))
-
-        if has_report:
+        # Status comes from accumulated sections, not just the current chunk.
+        if message_buffer.report_sections.get(report_key):
             message_buffer.update_agent_status(agent_name, "completed")
-        elif not found_active:
-            message_buffer.update_agent_status(agent_name, "in_progress")
-            found_active = True
         else:
-            message_buffer.update_agent_status(agent_name, "pending")
+            message_buffer.update_agent_status(agent_name, "in_progress")
+            all_filed = False
 
-    # When all analysts complete, transition research team to in_progress
     if (
-        not found_active
+        all_filed
         and selected
         and message_buffer.agent_status.get("Bull Researcher") == "pending"
     ):
@@ -730,17 +729,9 @@ def sync_analyst_tracker_from_chunk(
     chunk: dict[str, str],
     now: float | None = None,
 ) -> None:
+    """The analysts start together; each stops its clock when its report lands."""
     current_time = monotonic() if now is None else now
-    active_found = False
-
     for spec in tracker.plan.specs:
-        has_report = bool(chunk.get(spec.report_key))
-
-        if has_report:
-            tracker.mark_started(spec.key, started_at=current_time)
+        tracker.mark_started(spec.key, started_at=current_time)
+        if chunk.get(spec.report_key):
             tracker.mark_completed(spec.key, completed_at=current_time)
-            continue
-
-        if not active_found:
-            tracker.mark_started(spec.key, started_at=current_time)
-            active_found = True

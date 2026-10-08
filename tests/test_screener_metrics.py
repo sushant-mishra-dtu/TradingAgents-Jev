@@ -18,7 +18,7 @@ from tests import screener_db as fx
 from tests.test_company_profile import FakeTicker
 from tradingagents.dataflows import formulas as f
 from tradingagents.dataflows.vendors.india import profile, store
-from tradingagents.dataflows.vendors.yahoo import company_profile as yahoo, ohlcv
+from tradingagents.dataflows.vendors.yahoo import common, company_profile as yahoo
 from tradingagents.screener import catalog, engine, snapshot
 
 pytestmark = pytest.mark.unit
@@ -34,7 +34,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(yahoo, "yf", SimpleNamespace(Ticker=FakeTicker))
     monkeypatch.setattr(yahoo, "_CACHE", {})
     monkeypatch.setattr(profile, "_CACHE", {})
-    monkeypatch.setattr(ohlcv, "vendor_reachable", lambda url: True)
+    monkeypatch.setattr(common, "vendor_reachable", lambda url: True)
     return path
 
 

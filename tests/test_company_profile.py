@@ -12,8 +12,8 @@ import pytest
 from yfinance.exceptions import YFRateLimitError
 
 from tradingagents.dataflows import company_profile as cp
-from tradingagents.dataflows.errors import NoMarketDataError, VendorRateLimitError
-from tradingagents.dataflows.vendors.yahoo import company_profile as yahoo, ohlcv
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
+from tradingagents.dataflows.vendors.yahoo import common, company_profile as yahoo
 
 pytestmark = pytest.mark.unit
 
@@ -381,16 +381,16 @@ def test_profiles_are_cached_for_fifteen_minutes(monkeypatch):
 
 
 def test_an_unknown_symbol_is_no_data_and_an_outage_is_not(monkeypatch):
-    monkeypatch.setattr(ohlcv, "vendor_reachable", lambda url: True)
+    monkeypatch.setattr(common, "vendor_reachable", lambda url: True)
     with pytest.raises(NoMarketDataError):
         yahoo.build_company_profile("NOSUCH.NS")
-    monkeypatch.setattr(ohlcv, "vendor_reachable", lambda url: False)
-    with pytest.raises(VendorRateLimitError):
+    monkeypatch.setattr(common, "vendor_reachable", lambda url: False)
+    with pytest.raises(VendorUnavailableError):
         yahoo.build_company_profile("NOSUCH.NS")
 
 
 def test_throttling_is_reported_and_other_read_errors_lose_one_section(monkeypatch):
-    monkeypatch.setattr(ohlcv.time, "sleep", lambda s: None)
+    monkeypatch.setattr(common.time, "sleep", lambda s: None)
 
     class Throttled(FakeTicker):
         @property
@@ -411,7 +411,7 @@ def test_throttling_is_reported_and_other_read_errors_lose_one_section(monkeypat
             pass
 
     monkeypatch.setattr(yahoo, "yf", SimpleNamespace(Ticker=Throttled))
-    with pytest.raises(VendorRateLimitError):
+    with pytest.raises(VendorUnavailableError):
         yahoo.build_company_profile("ACME.NS")
     monkeypatch.setattr(yahoo, "yf", SimpleNamespace(Ticker=NoBalanceSheet))
     p = yahoo.build_company_profile("ACME.NS")

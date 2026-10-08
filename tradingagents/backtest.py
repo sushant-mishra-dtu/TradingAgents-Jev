@@ -2,7 +2,7 @@
 
 One run yields one decision, so it cannot say whether the system decides well.
 This runs the same machinery over many (ticker, date) cells and reads the
-aggregate. The decision log is the results table: every run already records its
+aggregate. The memory log is the results table: every run already records its
 rating and later settles it with realized and alpha return against the
 instrument's regional benchmark, so there is nothing to record separately.
 
@@ -25,8 +25,8 @@ from pathlib import Path
 from tradingagents.agents.rating import RATING_REVIEW
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.symbols import safe_ticker_component
-from tradingagents.decision_log import TradingMemoryLog
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.memory import TradingMemoryLog
 
 logger = logging.getLogger(__name__)
 
@@ -135,14 +135,16 @@ def run_backtest(
     portfolio=None,
     selected_analysts=("market", "social", "news", "fundamentals"),
     run_id: str | None = None,
+    progress: Callable[[int, int, str, str], None] | None = None,
     on_cell: Callable[[str, str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> BacktestResult:
-    """Analyze every ticker on every date, into a decision log of this run's own.
+    """Analyze every ticker on every date, into a memory log of this run's own.
 
     The live log stays untouched: a sweep would otherwise flood the context that
     real runs read back. Cells already in this run's log are skipped, so an
-    interrupted sweep resumes by being run again.
+    interrupted sweep resumes by being run again. ``progress(done, total,
+    ticker, date)`` is called before each cell that runs.
 
     ``on_cell(ticker, date)`` is called before each cell runs. ``should_stop``
     is checked before each cell; once it returns true no further cell starts and
@@ -160,14 +162,17 @@ def run_backtest(
     result = BacktestResult(run_id=run_id, log_path=Path(run_config["memory_log_path"]))
     done = {(e["ticker"], e["date"]) for e in graph.memory_log.load_entries()}
 
+    # A ticker or date given twice is one cell, run and settled once.
+    tickers, dates = list(dict.fromkeys(tickers)), list(dict.fromkeys(dates))
     cells = [(ticker, date) for ticker in tickers for date in dates]
-    for ticker, date in cells:
-        if (ticker, date) in done:
-            result.skipped += 1
-            continue
+    todo = [cell for cell in cells if cell not in done]
+    result.skipped = len(cells) - len(todo)
+    for index, (ticker, date) in enumerate(todo, 1):
         if should_stop is not None and should_stop():
             result.stopped = True
             break
+        if progress:
+            progress(index, len(todo), ticker, date)
         if on_cell is not None:
             on_cell(ticker, date)
         try:
@@ -190,13 +195,13 @@ def run_backtest(
 
 
 def summarize(source: BacktestResult | str | Path) -> BacktestSummary:
-    """Score the settled decisions of a backtest, or of a decision log at a path, by rating."""
+    """Score the settled decisions of a backtest, or of a memory log at a path, by rating."""
     if isinstance(source, BacktestResult):
         path = source.log_path      # a run whose cells all failed wrote no log: nothing to score
     elif Path(source).is_file():
         path = Path(source)
     else:
-        raise FileNotFoundError(f"no decision log at {source}")
+        raise FileNotFoundError(f"no memory log at {source}")
     entries = TradingMemoryLog({"memory_log_path": str(path)}).load_entries()
     # A decision with no readable rating has no direction, so it can neither
     # count for nor against the system; it is reported as unscored instead.

@@ -1,13 +1,16 @@
 """The web UI's background jobs and history readers, without Streamlit or an LLM."""
 
 import threading
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage
 
 from cli.webui import jobs
-from tradingagents.decision_log import TradingMemoryLog
 from tradingagents.graph import trading_graph
+from tradingagents.memory import TradingMemoryLog
+from tradingagents.reporting import write_report_tree
 
 pytestmark = pytest.mark.unit
 
@@ -17,11 +20,11 @@ CHUNKS = [
                             tool_calls=[{"name": "get_stock_data", "args": {"symbol": "NVDA"},
                                          "id": "t1"}])]},
     {"messages": [], "market_report": "## Trend\nUptrend intact."},
-    {"messages": [], "investment_debate_state": {"bull_history": "Bull case", "bear_history": "",
-                                                 "judge_decision": "Go long"}},
+    {"messages": [], "investment_debate_state": {"bull_history": "Bull case", "bear_history": ""},
+     "investment_plan": "Go long"},
     {"messages": [], "trader_investment_plan": "Buy 10 units"},
     {"messages": [], "risk_debate_state": {"aggressive_history": "More", "conservative_history": "",
-                                           "neutral_history": "", "judge_decision": DECISION}},
+                                           "neutral_history": ""}},
     {"messages": [], "final_trade_decision": DECISION},
 ]
 
@@ -55,6 +58,15 @@ class FakeGraph:
                 FakeGraph.gate.wait(5)
             yield chunk
 
+    def stream_run(self, state, **args):
+        for chunk in self.stream(state, **args):
+            yield chunk.get("messages", []), chunk
+
+    def save_reports(self, final_state, ticker):
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return write_report_tree(final_state, ticker,
+                                 Path(self.config["results_dir"]) / "reports" / f"{ticker}_{stamp}")
+
     def record_decision(self, ticker, date, state):
         TradingMemoryLog(self.config).store_decision(ticker, date, state["final_trade_decision"])
 
@@ -63,9 +75,6 @@ class FakeGraph:
 
     def end_checkpoint(self):
         pass
-
-    def process_signal(self, text):
-        return "Buy" if "Buy" in text else "REVIEW"
 
 
 @pytest.fixture

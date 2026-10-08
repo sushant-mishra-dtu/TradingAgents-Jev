@@ -27,22 +27,87 @@ def _blank_settings_overlay():
 _blank_settings_overlay()
 
 
+def _own_file_locations():
+    """Keep the suite's results, cache and memory log in a directory of its own.
+
+    Set before the package is imported, whose defaults put them in the user's
+    home: a test reading the user's cache would see what their runs fetched.
+    """
+    import tempfile
+
+    home = tempfile.mkdtemp(prefix="tradingagents-tests-")
+    os.environ["TRADINGAGENTS_RESULTS_DIR"] = os.path.join(home, "logs")
+    os.environ["TRADINGAGENTS_CACHE_DIR"] = os.path.join(home, "cache")
+    os.environ["TRADINGAGENTS_MEMORY_LOG_PATH"] = os.path.join(home, "memory", "trading_memory.md")
+
+
+_own_file_locations()
+
+
 def pytest_configure(config):
     for marker in ("unit", "integration", "smoke"):
         config.addinivalue_line("markers", f"{marker}: {marker}-level tests")
+    # yfinance caches each symbol's time zone on disk, in the home directory
+    # by default; the suite keeps it in a directory of its own.
+    import tempfile
+
+    import yfinance
+
+    yfinance.set_tz_cache_location(tempfile.mkdtemp(prefix="tradingagents-tests-yf-"))
+
+
+_LOOPBACK = ("127.0.0.1", "::1", "localhost")
 
 
 @pytest.fixture(autouse=True)
 def _no_network(request, monkeypatch):
-    """Tests do not reach the network; one that must is marked integration."""
+    """Tests do not reach the network; one that must is marked integration.
+
+    Loopback stays open: the web UI tests talk to a server of their own on 127.0.0.1.
+    """
     if request.node.get_closest_marker("integration"):
         return
 
-    def refuse(self, address):
-        raise OSError(f"test tried to reach the network: {address}")
+    def refuse(*args, **kwargs):
+        raise OSError(f"test tried to reach the network: {args[1:] or kwargs}")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    def loopback_only(real):
+        def call(sock, address, *rest):
+            if isinstance(address, tuple) and address[0] in _LOOPBACK:
+                return real(sock, address, *rest)
+            return refuse(sock, address, *rest)
+        return call
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        if host in _LOOPBACK:
+            return real_getaddrinfo(host, *args, **kwargs)
+        return refuse(None, host, *args)
+
+    monkeypatch.setattr(socket.socket, "connect", loopback_only(socket.socket.connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", loopback_only(socket.socket.connect_ex))
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    # yfinance's HTTP client is libcurl, which never touches Python's sockets.
+    from curl_cffi import requests as curl_requests
+
+    monkeypatch.setattr(curl_requests.Session, "request", refuse)
+    monkeypatch.setattr(curl_requests.AsyncSession, "request", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _at_a_terminal(monkeypatch):
+    """Tests of the interactive steps run as if at a terminal; pytest's stdin is
+    not one. A test of an unattended run sets isatty to False itself."""
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _own_cli_prefs(tmp_path, monkeypatch):
+    """The CLI keeps the last run's selections in the user's home; tests keep theirs apart."""
+    monkeypatch.setattr("cli.prefs._PREFS_PATH", tmp_path / "cli_prefs.json")
 
 
 _API_KEY_ENV_VARS = (

@@ -39,7 +39,7 @@ from tradingagents.agents.jev import ask_each, jev_client
 from tradingagents.agents.rating import RATING_REVIEW, extract_rating
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.symbols import safe_ticker_component
-from tradingagents.decision_log import TradingMemoryLog
+from tradingagents.memory import TradingMemoryLog
 from tradingagents.outcome_model import (
     Dataset,
     Evaluation,

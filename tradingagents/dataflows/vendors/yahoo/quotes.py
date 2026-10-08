@@ -13,7 +13,7 @@ from datetime import datetime
 
 import yfinance as yf
 
-from tradingagents.dataflows.errors import NoMarketDataError, VendorRateLimitError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 
 DELAY_NOTE = "Yahoo Finance delayed quote (about 15 minutes behind NSE)"
 
@@ -25,7 +25,7 @@ def delayed_quote(symbol: str) -> dict:
         price = info.get("lastPrice") if hasattr(info, "get") else info.last_price
     except Exception as exc:  # noqa: BLE001 — yfinance raises whatever its HTTP layer does
         if "Too Many Requests" in str(exc) or "429" in str(exc):
-            raise VendorRateLimitError(f"Yahoo Finance throttled the quote for {symbol}") from exc
+            raise VendorUnavailableError(f"Yahoo Finance throttled the quote for {symbol}") from exc
         raise NoMarketDataError(symbol, detail=f"no quote: {exc}") from exc
     if price is None or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
         raise NoMarketDataError(symbol, detail="no last price in Yahoo's quote")

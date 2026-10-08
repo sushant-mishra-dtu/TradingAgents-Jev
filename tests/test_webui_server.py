@@ -7,6 +7,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -16,9 +18,10 @@ from langchain_core.messages import AIMessage
 from cli import main as cli_main
 from cli.webui import server
 from cli.webui.jobs import JobRegistry
-from tradingagents.dataflows.errors import NoMarketDataError, VendorRateLimitError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.vendors.yahoo import company_profile as yahoo_company
 from tradingagents.graph import trading_graph
+from tradingagents.reporting import write_report_tree
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +39,7 @@ CHUNKS = [
      "market_report": "## Trend\nUp."},
     {"messages": [], "sentiment_report": "**Overall: Mildly Bullish**",
      "sentiment_judgments": JUDGMENTS},
-    {"messages": [], "risk_debate_state": {"judge_decision": DECISION}},
+    {"messages": [], "risk_debate_state": {"aggressive_history": "Size up."}},
     {"messages": [], "final_trade_decision": DECISION},
 ]
 
@@ -62,8 +65,17 @@ class FakeGraph:
     def stream(self, state, **args):
         yield from CHUNKS
 
+    def stream_run(self, state, **args):
+        for chunk in self.stream(state, **args):
+            yield chunk.get("messages", []), chunk
+
+    def save_reports(self, final_state, ticker):
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return write_report_tree(final_state, ticker,
+                                 Path(self.config["results_dir"]) / "reports" / f"{ticker}_{stamp}")
+
     def record_decision(self, ticker, date, state):
-        from tradingagents.decision_log import TradingMemoryLog
+        from tradingagents.memory import TradingMemoryLog
 
         TradingMemoryLog(self.config).store_decision(ticker, date, state["final_trade_decision"])
 
@@ -72,9 +84,6 @@ class FakeGraph:
 
     def end_checkpoint(self):
         pass
-
-    def process_signal(self, text):
-        return "Overweight"
 
 
 @pytest.fixture
@@ -285,7 +294,7 @@ def test_the_company_page_reads_one_stock_from_yahoo(base, monkeypatch):
     ("", None, 400, "Enter a symbol"),
     ("NV/DA", None, 400, "Tickers"),
     ("NOSUCH.NS", NoMarketDataError("NOSUCH.NS"), 404, ".NS for NSE"),
-    ("TCS.NS", VendorRateLimitError("Yahoo Finance is rate-limiting requests"), 503, "Try again"),
+    ("TCS.NS", VendorUnavailableError("Yahoo Finance is rate-limiting requests"), 503, "Try again"),
 ])
 def test_bad_company_symbols_say_what_is_wrong(base, monkeypatch, symbol, raised, status, message):
     def fail(s):
