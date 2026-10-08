@@ -186,6 +186,9 @@ def documents_section(docs: list[dict]) -> dict:
     }
 
 
+FILED_BORROWINGS_HINT = "Borrowings as filed, non-current plus current; lease liabilities excluded"
+
+
 def _with_india(profile: dict, india: dict, data: CompanyData) -> dict:
     sec = india["security"]
     divisor = profile["unit"]["divisor"]
@@ -197,8 +200,13 @@ def _with_india(profile: dict, india: dict, data: CompanyData) -> dict:
     if shareholding["periods"]:
         sources.append({"section": "Shareholding", "source": shareholding["source"]})
     shares = india["shares"]
+    balance_sheet = profile["balanceSheet"]
+    if india["balance"]:  # filed borrowings leave lease liabilities out, unlike Yahoo's total debt
+        balance_sheet = {**balance_sheet, "rows": [
+            {**r, "hint": FILED_BORROWINGS_HINT} if r["key"] == "borrowings" else r for r in balance_sheet["rows"]]}
     return {
         **profile,
+        "balanceSheet": balance_sheet,
         "basis": {"current": india["basis"], "available": india["bases"]},
         "sources": sources,
         "india": {"isin": sec["isin"], "nseSymbol": sec.get("nse_symbol"), "bseCode": sec.get("bse_code"),
