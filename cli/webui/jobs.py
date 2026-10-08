@@ -124,7 +124,8 @@ class AnalysisJob:
         return self
 
     def cancel(self) -> None:
-        """Stop after the current graph step; a checkpointed run can resume later."""
+        """Stop after the current graph step, or at once if a provider retry is waiting;
+        a checkpointed run can resume later."""
         self._cancel.set()
 
     def wait(self, timeout: float | None = None) -> None:
@@ -170,6 +171,9 @@ class AnalysisJob:
         graph = None
         _current_job.set(self)
         try:
+            from tradingagents.llm_clients.openai_client import cancel_event
+
+            cancel_event.set(self._cancel)  # a stop also cuts short a provider retry wait
             self._log(f"Analyzing {self.ticker} on {self.trade_date} with: {', '.join(self.analysts)}")
             if self.portfolio is not None:  # the block the decision agents read
                 self._log(self.portfolio.render(self.ticker))
@@ -239,6 +243,11 @@ class AnalysisJob:
                 self.buffer.add_message("System", "Stopped by user")
                 self.status = CANCELLED
         except Exception as exc:
+            if self._cancel.is_set():  # stopped, whatever the step it interrupted raised
+                with self.lock:
+                    self.buffer.add_message("System", f"Stopped by user ({type(exc).__name__} as it stopped)")
+                    self.status = CANCELLED
+                return
             log.exception("Analysis %s of %s failed", self.id, self.ticker)
             with self.lock:
                 self.buffer.add_message("System", f"Failed: {exc}")
