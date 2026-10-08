@@ -26,7 +26,8 @@ change of membership; filing and shareholding alerts on documents and patterns
 that were not there before.
 
 Idempotent. Each alert remembers the data it last saw (``state``): a trading
-day, or the live snapshot's build time. Evaluating the same data again compares
+day, or the live snapshot's data date and build time (so a snapshot rebuilt from
+older data is skipped, not compared). Evaluating the same data again compares
 it with what came before it, so it finds the same change, and the change's own
 key (``alert_events.dedupe``, unique per alert) stops it being recorded twice.
 A firing held back by the cooldown is remembered as handled, so it does not
@@ -351,8 +352,8 @@ class Evaluation:
 
 
 def step(state: dict | None, epoch: str, value) -> tuple[bool, object, dict] | None:
-    """Record an observation of ``value`` at ``epoch`` (a trading day or a snapshot's
-    build time, which sort in time order). Returns whether there was an earlier
+    """Record an observation of ``value`` at ``epoch`` (a trading day, or a snapshot's
+    data date and build time; both sort in time order). Returns whether there was an earlier
     observation, the value it saw, and the new state; None for data older than
     already seen. Observing the same epoch again compares with the one before it,
     so a re-run finds the same change."""
@@ -439,14 +440,28 @@ def _price(alert, params: dict, state: dict | None, ctx: Context) -> Outcome:
 
 
 def _snapshot_epoch(result: dict) -> tuple[str, str]:
+    """``data_date|built_at``: a snapshot rebuilt from older data sorts before the one
+    last evaluated, however recently it was built."""
     snap = result["snapshot"]
-    return snap.get("built_at") or snap["data_date"], snap["data_date"]
+    return f"{snap['data_date']}|{snap.get('built_at') or ''}", snap["data_date"]
+
+
+def _snapshot_state(state: dict | None) -> dict | None:
+    """A state stored before epochs carried the data date (a bare build time) cannot be
+    compared with them: start again from a new baseline, once, without an event."""
+    return state if state is None or "|" in str(state.get("epoch", "|")) else None
+
+
+def _older(state: dict | None, day: str) -> str:
+    seen = str((state or {}).get("epoch", "")).split("|")[0]
+    return f"The snapshot's data ({day}) is older than the data last evaluated ({seen}); skipped."
 
 
 def _metric(alert, params: dict, state: dict | None, ctx: Context) -> Outcome:
     isin, symbol, query = alert["isin"], alert["symbol"], params["query"]
     result = engine.run(query, isins=[isin], page_size=1, user_conn=ctx.user, india_conn=ctx.india)
     epoch, day = _snapshot_epoch(result)
+    state = _snapshot_state(state)
     current = engine.run("", isins=[isin], columns=result["used"], show_used=False, page_size=1,
                          user_conn=ctx.user, india_conn=ctx.india)
     names = {c["id"]: c["name"] for c in current["columns"]}
@@ -462,7 +477,7 @@ def _metric(alert, params: dict, state: dict | None, ctx: Context) -> Outcome:
         value, note = False, "false"
     stepped = step(state, epoch, value)
     if stepped is None:
-        return Outcome(None, {"ok": True, "message": "The snapshot is older than the one last evaluated."})
+        return Outcome(None, {"ok": True, "message": _older(state, day), "dataDate": day})
     had, prev, new_state = stepped
     events = []
     if rose(had, prev, value):
@@ -491,10 +506,11 @@ def _screen(alert, params: dict, state: dict | None, ctx: Context) -> Outcome:
     result = engine.run(screen["query"], page_size=SCAN_LIMIT, max_page_size=SCAN_LIMIT,
                         user_conn=ctx.user, india_conn=ctx.india)
     epoch, day = _snapshot_epoch(result)
+    state = _snapshot_state(state)
     members = sorted(r["isin"] for r in result["rows"])
     stepped = step(state, epoch, members)
     if stepped is None:
-        return Outcome(None, {"ok": True, "message": "The snapshot is older than the one last evaluated."})
+        return Outcome(None, {"ok": True, "message": _older(state, day), "dataDate": day})
     had, prev, new_state = stepped
     events = []
     if had and prev is not None:
