@@ -443,7 +443,13 @@ class Syncer:
         waits for a second pass, so a filing that does carry the ISIN can introduce
         the company first, whatever order the files sort in."""
         result, began = JobResult("import"), time.monotonic()
-        files = sorted({f for p in paths for f in _xml_files(Path(p))})
+        found = {}
+        for p in map(Path, paths):
+            found[p] = _xml_files(p)
+            if not found[p]:
+                result.notes.append(f"no .xml files in {p}" if p.is_dir() else
+                                    f"not an .xml file: {p}" if p.is_file() else f"no such file or folder: {p}")
+        files = sorted({f for fs in found.values() for f in fs})
         self.progress.start("import", len(files))
         waiting = []
         for path in files:

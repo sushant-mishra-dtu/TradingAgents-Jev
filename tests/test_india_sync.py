@@ -418,6 +418,27 @@ def test_a_lock_left_by_a_dead_sync_is_taken_over_and_released(cli_db):
     assert not lock.exists()
 
 
+def flat(text: str) -> str:
+    """Rich wraps at the terminal width; compare with the whitespace collapsed."""
+    return " ".join(text.split())
+
+
+def test_importing_a_missing_path_exits_non_zero_naming_it(cli_db, tmp_path):
+    missing = tmp_path / "no" / "such" / "folder"
+    out = CliRunner().invoke(app, ["india", "import", str(missing)])
+    assert out.exit_code == 1
+    assert flat(f"no such file or folder: {missing}") in flat(out.output)
+
+
+def test_importing_a_folder_without_xml_files_says_so(cli_db, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "notes.txt").write_text("not a filing", encoding="utf-8")
+    out = CliRunner().invoke(app, ["india", "import", str(empty)])
+    assert out.exit_code == 0, out.output
+    assert flat(f"no .xml files in {empty}") in flat(out.output)
+
+
 def test_a_missing_inbox_exits_non_zero_with_the_reason(cli_db, tmp_path):
     out = CliRunner().invoke(app, ["india", "sync-results", "--dir", str(tmp_path / "nowhere")])
     assert out.exit_code == 1 and "NSE serves them to browsers only" in " ".join(out.output.split())
