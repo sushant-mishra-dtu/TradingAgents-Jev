@@ -167,6 +167,26 @@ def test_a_refusing_host_stops_the_run(make, conn):
     assert conn.execute("SELECT status FROM ingest_log WHERE job='prices'").fetchone()[0] == "failed"
 
 
+def test_days_logged_missing_just_before_a_refusal_are_retried_next_run(make, conn):
+    # 2 October has no file here: in a real run that 403 may have been the start of the
+    # refusal, so once 5 October finds the host refusing us, 2 October is failed too.
+    s = make()
+    s.sync_securities()
+    blocked = {url for _, url in nse.price_sources(date(2026, 10, 5))}
+    download = s.client._download
+
+    def refusing(url):
+        if url in blocked:
+            raise SourceBlocked("archives.nseindia.com refuses this client")
+        return download(url)
+    s.client._download = refusing
+    with pytest.raises(sync.SyncAborted, match="refuses"):
+        s.sync_prices(OCT1, date(2026, 10, 5))
+    statuses = dict(conn.execute("SELECT key, status FROM ingest_log WHERE job='prices'").fetchall())
+    assert statuses == {"2026-10-01": "ok", "2026-10-02": "failed", "2026-10-05": "failed"}
+    assert not store.is_done(conn, "prices", "2026-10-02")
+
+
 def test_one_failed_day_is_logged_and_the_run_goes_on_until_failures_pile_up(make):
     s = make(fail=FetchFailed("timeout"))
     with pytest.raises(sync.SyncAborted, match="in a row"):
@@ -315,7 +335,7 @@ def test_only_the_archive_host_is_ever_asked(tmp_path, url):
     assert c.session.calls == [] and c.requests == 0
 
 
-def test_the_canary_is_asked_once_per_run_and_never_downloaded(tmp_path):
+def test_the_canary_is_asked_once_for_a_few_403s_and_never_downloaded(tmp_path):
     c, _ = client(tmp_path, [(403, b"Access Denied"), (200, b"equity list"), (403, b"Access Denied"),
                              (403, b"Access Denied")])
     for name in ("a.zip", "b.zip", "c.zip"):
@@ -346,6 +366,25 @@ def test_403_everywhere_means_the_host_refuses_us(tmp_path):
     c, _ = client(tmp_path, [(403, b"Access Denied"), (403, b"Access Denied")])
     with pytest.raises(SourceBlocked):
         c.get("https://archives.nseindia.com/x", "x")
+
+
+def test_the_canary_is_asked_again_after_a_run_of_403s_and_a_refusal_stops_the_run(tmp_path):
+    denied = (403, b"Access Denied")
+    c, _ = client(tmp_path, [denied, (200, b"equity list"), *[denied] * 4, denied, denied])
+    for n in range(5):
+        assert c.get(f"https://archives.nseindia.com/old/{n}.zip", f"{n}.zip") is None
+    with pytest.raises(SourceBlocked, match="refuses this client"):
+        c.get("https://archives.nseindia.com/old/5.zip", "5.zip")
+    assert c.session.calls.count(c.canary_url) == 2 and c.session.calls[-1] == c.canary_url
+
+
+def test_a_file_served_between_403s_restarts_the_count(tmp_path):
+    denied = (403, b"Access Denied")
+    c, _ = client(tmp_path, [denied, (200, b"equity list"), *[denied] * 3, (404, b""), *[denied] * 4,
+                             (200, b"new"), *[denied] * 4])
+    for n in range(14):
+        c.get(f"https://archives.nseindia.com/f/{n}.zip", f"{n}.zip")
+    assert c.session.calls.count(c.canary_url) == 1 and c.session.script == []
 
 
 def test_429_waits_as_told_then_gives_up(tmp_path):

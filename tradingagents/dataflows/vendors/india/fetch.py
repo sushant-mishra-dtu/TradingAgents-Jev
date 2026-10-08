@@ -12,9 +12,11 @@ Nothing here works around an access control. archives.nseindia.com answers a
 path it does not serve (bhavcopies before 2016, say) with the same Akamai
 "Access Denied" page it would use to refuse a client, so the first 403 is
 checked against a file the host always serves: if that is refused too, the host
-is refusing us and ``SourceBlocked`` stops the run; if not, that file and every
-later 403 are reported missing. A 429 that outlasts its Retry-After also stops
-the run.
+is refusing us and ``SourceBlocked`` stops the run; if not, that file is
+reported missing, and so are later 403s until five come in a row with nothing
+served between them: then the canary is asked again, so a host that starts
+refusing us mid-run still stops it. A 429 that outlasts its Retry-After also
+stops the run.
 
 Each download is written once under ``<data_cache_dir>/india/raw/`` and read
 from there afterwards, so re-parsing never fetches again.
@@ -45,6 +47,7 @@ MIN_INTERVAL = 1.0  # seconds between requests to a host; a setting can only len
 _MAX_CONTACT = 200
 _RETRIES = 3
 _MAX_RETRY_AFTER = 300.0
+CANARY_RECHECK = 5  # 403s in a row taken as "not this file" before the canary is asked again
 
 
 class SourceBlocked(VendorError):
@@ -88,7 +91,8 @@ class ArchiveClient:
         self.sleep, self.clock = sleep, clock
         self.canary_url = canary_url
         self._last: dict[str, float] = {}
-        self._refusals: dict[str, bool] = {}  # host -> the canary's verdict, asked once
+        self._refusals: dict[str, bool] = {}  # host -> the canary's latest verdict
+        self._unchecked: dict[str, int] = {}  # host -> 403s taken as missing since a file was served
         self.requests = 0
         self.downloaded = 0  # bytes
 
@@ -152,15 +156,19 @@ class ArchiveClient:
             status = response.status_code
             if 300 <= status < 400:
                 _refuse_redirect(url, status, response.headers.get("Location"))
+            host = urlsplit(url).hostname
             if status == 200:
+                self._unchecked[host] = 0
                 self.downloaded += len(response.content)
                 return response.content
             if status == 404:
+                self._unchecked[host] = 0
                 return None
             if status == 403:
-                if self._refused(urlsplit(url).hostname):
+                if self._refused(host):
                     raise SourceBlocked(f"{urlsplit(url).netloc} refuses this client (403 on {url} "
                                         f"and on {self.canary_url})")
+                self._unchecked[host] = self._unchecked.get(host, 0) + 1
                 logger.info("403 on %s while the host still serves others: treated as missing", url)
                 return None
             if status == 429:
@@ -179,16 +187,13 @@ class ArchiveClient:
 
     def _refused(self, host: str | None) -> bool:
         """Whether a 403 means "not you" or "not this file": ask for a file the
-        host always serves, once per host for the client's lifetime, reading
-        only the status."""
+        host always serves, reading only the status. A "not this file" verdict
+        holds until ``CANARY_RECHECK`` 403s come in a row with no file served
+        between them (old paths the host never served, say); then it is asked
+        again, in case the host has started refusing us since."""
         if not self.canary_url:
             return True
-        # TODO(L5 follow-up): the verdict is kept for the whole run. If the host starts
-        # refusing us mid-run, every later 403 is logged "missing", and a missing day
-        # counts as done, so the next sync skips it. Accepted for now (2026-10-09).
-        # Later: ask the canary again after a few 403s in a row, or log a 403 as
-        # "failed" (retried next run) instead of "missing".
-        if host not in self._refusals:
+        if host not in self._refusals or self._unchecked.get(host, 0) >= CANARY_RECHECK:
             try:
                 response = self._request(self.canary_url, stream=True)
             except requests.RequestException:
@@ -197,6 +202,7 @@ class ArchiveClient:
                 self._refusals[host] = response.status_code in (401, 403, 429)
             finally:
                 response.close()
+            self._unchecked[host] = 0
         return self._refusals[host]
 
 

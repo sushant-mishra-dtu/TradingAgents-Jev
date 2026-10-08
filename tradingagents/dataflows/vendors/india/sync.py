@@ -264,6 +264,9 @@ class Syncer:
         days = store.trading_days(start, min(end, self.today))
         self.progress.start(job, len(days))
         consecutive = 0
+        # Days logged missing since the last good one. The client takes a 403 for "no such
+        # file" until it sees the host refusing us, so a refusal found later may explain them.
+        unconfirmed: list[str] = []
         for day in days:
             key = day.isoformat()
             if not self.force and store.is_done(self.conn, job, key):
@@ -274,6 +277,9 @@ class Syncer:
                 rows, detail = work(day)
             except SourceBlocked as exc:
                 store.log(self.conn, job, key, "failed", error=str(exc))
+                for earlier in unconfirmed:  # failed, so the next run asks for them again
+                    store.log(self.conn, job, earlier, "failed",
+                              error=f"logged missing just before the run stopped: {exc}")
                 self.conn.commit()
                 raise SyncAborted(str(exc)) from exc
             except FetchFailed as exc:
@@ -292,7 +298,9 @@ class Syncer:
                 if rows is None:
                     store.log(self.conn, job, key, "missing", detail=detail or "no file (holiday)")
                     result.missing += 1
+                    unconfirmed.append(key)
                 else:
+                    unconfirmed.clear()
                     store.log(self.conn, job, key, "ok", rows=rows, detail=detail)
                     result.done += 1
                     result.rows += rows
