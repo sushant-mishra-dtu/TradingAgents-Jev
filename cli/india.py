@@ -62,7 +62,10 @@ def _symbols(value: str | None) -> list[str] | None:
 
 def _run(work, *, force: bool = False):
     """Take the sync lock, open the database, run ``work(syncer)`` under a progress
-    display, print what each job did, and turn a systemic failure into exit code 1."""
+    display, print what each job did, and turn a systemic failure into exit code 1.
+
+    Every command takes the lock, ``india import`` too though it fetches nothing:
+    an import writes the same database and ingest log a running sync is writing."""
     try:
         with india_sync.sync_lock():
             _run_locked(work, force=force)

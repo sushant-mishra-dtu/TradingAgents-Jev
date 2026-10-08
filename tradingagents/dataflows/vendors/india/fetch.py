@@ -183,6 +183,11 @@ class ArchiveClient:
         only the status."""
         if not self.canary_url:
             return True
+        # TODO(L5 follow-up): the verdict is kept for the whole run. If the host starts
+        # refusing us mid-run, every later 403 is logged "missing", and a missing day
+        # counts as done, so the next sync skips it. Accepted for now (2026-10-09).
+        # Later: ask the canary again after a few 403s in a row, or log a 403 as
+        # "failed" (retried next run) instead of "missing".
         if host not in self._refusals:
             try:
                 response = self._request(self.canary_url, stream=True)
