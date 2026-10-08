@@ -13,7 +13,6 @@ import logging
 import re
 import threading
 import time
-import traceback
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -75,6 +74,8 @@ class _JobLogHandler(logging.Handler):
 
 
 logging.getLogger("tradingagents.llm_clients").addHandler(_JobLogHandler(logging.WARNING))
+# A failed run's traceback goes to the server's terminal; the API shows only the error itself.
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -237,9 +238,10 @@ class AnalysisJob:
                 self.buffer.add_message("System", "Stopped by user")
                 self.status = CANCELLED
         except Exception as exc:
+            log.exception("Analysis %s of %s failed", self.id, self.ticker)
             with self.lock:
                 self.buffer.add_message("System", f"Failed: {exc}")
-                self.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
+                self.error = f"{type(exc).__name__}: {exc}"
                 self.status = FAILED
         finally:
             self.finished = time.time()
@@ -321,7 +323,8 @@ class BacktestJob:
             )
             self.status = CANCELLED if self.result.stopped else DONE
         except Exception as exc:
-            self.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
+            log.exception("Backtest %s failed", self.id)
+            self.error = f"{type(exc).__name__}: {exc}"
             self.status = FAILED
         finally:
             self.current = None

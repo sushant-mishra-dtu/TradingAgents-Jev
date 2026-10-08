@@ -39,6 +39,11 @@ class ScreenTimeout(Exception):
     pass
 
 
+class AsOfError(snapshot.SnapshotError, ValueError):
+    """A malformed ``as_of``: the request's mistake, not a missing snapshot. Still a
+    SnapshotError, so callers that report those keep reporting it."""
+
+
 def open_india():
     """The India database, read-only, or ScreenerUnavailable."""
     conn = store.open_existing()
@@ -139,7 +144,7 @@ def run(query: str, *, columns: list[str] | None = None, sort: dict | None = Non
         try:
             as_of = date.fromisoformat(str(as_of)).isoformat()
         except ValueError:
-            raise snapshot.SnapshotError(f"as_of must be a date (YYYY-MM-DD) or 'live', not {as_of!r}") from None
+            raise AsOfError(f"as_of must be a date (YYYY-MM-DD) or 'live', not {as_of!r}") from None
     else:
         as_of = None
     own = india_conn is None

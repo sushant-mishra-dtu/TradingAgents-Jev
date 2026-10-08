@@ -202,7 +202,8 @@ def _reach(graph: dict[str, set[str]], key: str) -> set[str]:
 
 def save_ratio(conn, body: dict) -> Ratio:
     """Create a ratio, or update the one ``body['id']`` names."""
-    editing = int(body["id"]) if body.get("id") not in (None, "") else None
+    editing = (userdb.record_id(body["id"], ScreenError("No such custom ratio."))
+               if body.get("id") not in (None, "") else None)
     if body.get("definition"):
         name, expression = parse_definition(str(body["definition"]))
     else:
@@ -229,6 +230,7 @@ def save_ratio(conn, body: dict) -> Ratio:
 
 
 def delete_ratio(conn, ratio_id: int) -> None:
+    ratio_id = userdb.record_id(ratio_id, ScreenError("No such custom ratio."))
     ratios = list_ratios(conn)
     target = next((r for r in ratios if r.id == ratio_id), None)
     if target is None:
@@ -290,7 +292,7 @@ def save_screen(conn, body: dict, ratios: list[Ratio]) -> dict:
     editing = body.get("id")
     if isinstance(editing, str) and editing.startswith("preset:"):
         raise ScreenError("Presets are read-only: duplicate it and edit the copy.")
-    editing = int(editing) if editing not in (None, "") else None
+    editing = userdb.record_id(editing, ScreenError("No such screen.")) if editing not in (None, "") else None
     name = " ".join(str(body.get("name") or "").split())
     if not name:
         raise ScreenError("Give the screen a name.")
@@ -326,7 +328,8 @@ def delete_screen(conn, screen_id) -> None:
     if isinstance(screen_id, str) and screen_id.startswith("preset:"):
         raise ScreenError("Presets are read-only and cannot be deleted.")
     with conn:
-        if conn.execute("DELETE FROM screens WHERE id=?", (int(screen_id),)).rowcount == 0:
+        if conn.execute("DELETE FROM screens WHERE id=?",
+                        (userdb.record_id(screen_id, ScreenError("No such screen.")),)).rowcount == 0:
             raise ScreenError("No such screen.")
 
 

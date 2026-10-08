@@ -307,6 +307,44 @@ def test_screen_exports(base, india):
     assert status == 400 and data["errors"]
 
 
+
+# --- Malformed ids --------------------------------------------------------------------------------
+
+BAD_IDS = ["abc", [], 10**30]
+
+
+def _id_requests(bad):
+    path_id = urllib.parse.quote(json.dumps(bad), safe="")
+    return [
+        ("/api/screens", {"id": bad, "name": "x", "query": "Market Capitalization > 1"}),
+        ("/api/ratios", {"id": bad, "definition": "Twice = Market Capitalization * 2"}),
+        (f"/api/watchlists/{path_id}", None),
+        (f"/api/alerts/{path_id}/delete", {}),
+        (f"/api/alerts/inbox?alert={path_id}", None),
+        (f"/api/alerts/inbox?alert={bad}", None),
+        (f"/api/screens/{path_id}/delete", {}),
+        (f"/api/ratios/{path_id}/delete", {}),
+        ("/api/watchlists/order", {"ids": [bad]}),
+        ("/api/alerts/inbox/read", {"ids": [bad]}),
+        ("/api/alerts/evaluate", {"ids": [bad]}),
+    ]
+
+
+@pytest.mark.parametrize("bad", BAD_IDS, ids=["text", "list", "2^99"])
+def test_a_malformed_id_is_a_400_or_404_never_a_500(base, india, bad):
+    for path, body in _id_requests(bad):
+        status, reply = call(base, path, body)
+        assert status in (400, 404), (path, status, reply)
+        assert "Traceback" not in reply["error"] and "OverflowError" not in reply["error"], (path, reply)
+
+
+def test_the_largest_sqlite_id_is_still_an_id(base, india):
+    # 2^63 - 1 is a valid id that names nothing; 2^63 is not an id at all.
+    assert call(base, f"/api/watchlists/{2**63 - 1}")[0] == 404
+    assert call(base, f"/api/watchlists/{2**63}")[0] == 404
+    assert call(base, f"/api/alerts/inbox?alert={2**63 - 1}")[0] == 200
+
+
 def test_peers_industry_and_watchlist_exports(base, india):
     status, (raw, headers) = call(base, "/api/export/peers.csv?symbol=GROWCO.NS")
     assert status == 200 and len(raw.decode("utf-8-sig").splitlines()) == 11

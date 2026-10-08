@@ -9,6 +9,7 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -138,7 +139,7 @@ def test_a_run_as_of_a_past_snapshot(base, built):
 @pytest.mark.parametrize("body, status, message", [
     ({"query": "Retrun on equity > 1"}, 400, "did you mean 'Return on equity'"),
     ({"query": "ROCE > 1", "as_of": "2024-01-01"}, 503, "india build-snapshot --as-of 2024-01-01"),
-    ({"query": "ROCE > 1", "as_of": "yesterday"}, 503, "as_of must be a date"),
+    ({"query": "ROCE > 1", "as_of": "yesterday"}, 400, "as_of must be a date"),
     ({"query": "ROCE > 1", "columns": ["nope"]}, 400, "Unknown column"),
     ({"query": "ROCE > 1", "sort": {"key": "roce", "dir": "sideways"}}, 400, "sort is"),
     ({"query": 5}, 400, "as text"),
@@ -147,6 +148,19 @@ def test_a_run_as_of_a_past_snapshot(base, built):
 def test_bad_runs_say_what_is_wrong(base, built, body, status, message):
     code, reply = call(base, "/api/screen/run", body)
     assert code == status and message in reply["error"], reply
+
+
+@pytest.mark.parametrize("as_of", ["-1", 5, "2026-13-01", {"day": 1}])
+def test_a_malformed_as_of_is_the_request_s_fault(base, built, as_of):
+    code, reply = call(base, "/api/screen/run", {"query": "ROCE > 1", "as_of": as_of})
+    assert code == 400 and "setup" not in reply and "as_of must be a date" in reply["error"], reply
+    code, reply = call(base, "/api/export/screen.csv?query=ROCE%20%3E%201&as_of=" + urllib.parse.quote(str(as_of)))
+    assert code == 400 and "setup" not in reply, reply
+
+
+def test_a_well_formed_date_without_a_snapshot_still_asks_for_setup(base, built):
+    code, reply = call(base, "/api/screen/run", {"query": "ROCE > 1", "as_of": "2024-01-01"})
+    assert code == 503 and reply["setup"] is True
 
 
 def test_a_query_error_carries_its_span(base, built):

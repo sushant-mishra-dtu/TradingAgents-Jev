@@ -1,5 +1,6 @@
 """The browser UI's HTTP server, driven over real HTTP with a fake graph and no LLM."""
 
+import http.client
 import json
 import socket
 import threading
@@ -206,6 +207,76 @@ def test_cross_origin_posts_are_refused(base):
     status, body = call(base, "/api/analyses", {"ticker": "NVDA"},
                         headers={"Origin": "https://evil.example"})
     assert status == 403
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/api/alerts", None),
+    ("/screens", None),
+    ("/api/screens", {"name": "x", "query": "ROE > 1"}),
+])
+def test_a_foreign_host_is_refused_even_with_a_matching_origin(base, path, body):
+    # DNS rebinding: evil.example resolves to 127.0.0.1, so the browser sends its own name.
+    port = base.rsplit(":", 1)[1]
+    status, reply = call(base, path, body, headers={"Host": f"evil.example:{port}",
+                                                    "Origin": f"http://evil.example:{port}"})
+    assert status == 421
+    assert reply["error"] == f"Unknown host; open the UI at http://localhost:{port}."
+
+
+def test_the_loopback_names_are_answered(base):
+    port = base.rsplit(":", 1)[1]
+    for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"LocalHost:{port}"):
+        assert call(base, "/api/backtests", headers={"Host": host}) == (200, {"runs": [], "jobs": []})
+
+
+def test_only_json_may_be_posted(base):
+    # A plain HTML form can send text/plain cross-site without a preflight.
+    status, reply = call(base, "/api/screens", {"name": "x", "query": "ROE > 1"},
+                         headers={"Content-Type": "text/plain"})
+    assert status == 415 and "application/json" in reply["error"]
+    status, reply = call(base, "/api/queue/cancel", {}, headers={"Content-Type": "application/json; charset=utf-8"})
+    assert status == 200
+
+
+def test_allowed_hosts():
+    assert server.allowed_hosts("127.0.0.1", 8501) == {"127.0.0.1:8501", "localhost:8501", "[::1]:8501"}
+    assert "192.168.1.5:8501" in server.allowed_hosts("192.168.1.5", 8501)
+    # On every address, only the names given join the loopback ones.
+    wide = server.allowed_hosts("0.0.0.0", 8501, ["Box.lan", "nas:9000", "fe80::1"])
+    assert wide == {"127.0.0.1:8501", "localhost:8501", "[::1]:8501", "box.lan:8501", "nas:9000",
+                    "[fe80::1]:8501"}
+    assert "localhost" in server.allowed_hosts("127.0.0.1", 80)
+
+
+@pytest.mark.parametrize("length", ["abc", "-1"])
+def test_a_bad_content_length_is_a_400(base, length):
+    conn = http.client.HTTPConnection(base.removeprefix("http://"), timeout=5)
+    try:
+        conn.putrequest("POST", "/api/screens")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", length)
+        conn.endheaders()
+        res = conn.getresponse()
+        assert res.status == 400 and "Content-Length" in json.loads(res.read())["error"]
+    finally:
+        conn.close()
+
+
+def test_a_failed_run_shows_its_error_but_no_traceback(base, monkeypatch, caplog):
+    def broken(self, state, **args):
+        raise RuntimeError("the provider said no")
+        yield
+
+    monkeypatch.setattr(FakeGraph, "stream", broken)
+    status, started = call(base, "/api/analyses", {
+        "ticker": "NVDA", "date": "2026-09-01", "analysts": ["market"], "settings": SETTINGS})
+    assert status == 201, started
+    detail = _wait_done(base, started["id"])
+    assert detail["status"] == "failed"
+    assert detail["error"] == "RuntimeError: the provider said no"
+    assert "Traceback" not in json.dumps(detail) and __file__ not in json.dumps(detail)
+    # The traceback still reaches the server's log.
+    assert any(r.exc_info and "the provider said no" in str(r.exc_info[1]) for r in caplog.records)
 
 
 def test_only_listed_reports_can_be_opened(base):

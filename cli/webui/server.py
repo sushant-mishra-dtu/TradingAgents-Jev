@@ -322,9 +322,10 @@ def company(symbol: str, basis: str | None = None) -> dict:
 
 def _screener_errors(fn):
     """Screener failures as API errors: a query's span, or what to run when the
-    India database or its snapshot is missing. Never a 500 for those."""
+    India database or its snapshot is missing. Never a 500 for those, nor for a
+    malformed value the screener could not use."""
     from tradingagents.screener.alerts import AlertError
-    from tradingagents.screener.engine import ScreenerUnavailable, ScreenTimeout
+    from tradingagents.screener.engine import AsOfError, ScreenerUnavailable, ScreenTimeout
     from tradingagents.screener.peers import IndustryNotFound, PeersUnavailable
     from tradingagents.screener.query import QueryError
     from tradingagents.screener.screens import ScreenError
@@ -345,10 +346,14 @@ def _screener_errors(fn):
         raise ApiError(str(exc), status) from None
     except IndustryNotFound as exc:
         raise ApiError(str(exc), HTTPStatus.NOT_FOUND) from None
+    except AsOfError as exc:  # before SnapshotError, which it also is
+        raise ApiError(str(exc)) from None
     except (ScreenerUnavailable, SnapshotError, PeersUnavailable) as exc:
         raise ApiError(str(exc), HTTPStatus.SERVICE_UNAVAILABLE, setup=True) from None
     except ScreenTimeout as exc:
         raise ApiError(str(exc), HTTPStatus.REQUEST_TIMEOUT) from None
+    except (TypeError, ValueError, OverflowError) as exc:  # a backstop: bad input is the request's fault
+        raise ApiError(f"Bad request: {exc}") from None
 
 
 def _with_user_store(work):
@@ -434,7 +439,7 @@ def ratio_delete(ratio_id: str) -> dict:
 
     if not ratio_id.isdigit():
         raise ApiError("No such custom ratio.", HTTPStatus.NOT_FOUND)
-    _with_user_store(lambda user: screens.delete_ratio(user, int(ratio_id)))
+    _with_user_store(lambda user: screens.delete_ratio(user, ratio_id))
     return {"ok": True}
 
 
@@ -597,11 +602,13 @@ def alert_save(body: dict) -> dict:
 
 
 def alerts_evaluate(body: dict) -> dict:
-    from tradingagents.screener import alerts
+    from tradingagents.screener import alerts, userdb
 
     ids = body.get("ids")
-    if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, int) for i in ids)):
-        raise ApiError("ids is a list of alert ids.")
+    if ids is not None:
+        if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+            raise ApiError("ids is a list of alert ids.")
+        ids = [userdb.record_id(i, ApiError("No such alert.", HTTPStatus.NOT_FOUND)) for i in ids]
 
     def work(user):
         result = alerts.evaluate(user, alert_ids=ids)
@@ -829,12 +836,15 @@ class Handler(BaseHTTPRequestHandler):
     registry: JobRegistry  # set by make_server
     queue: AnalysisQueue  # set by make_server
     poller = None  # the alerts' delayed-quote PricePoller, when TRADINGAGENTS_ALERT_POLL_MINUTES turns it on
+    allowed_hosts: frozenset[str] = frozenset()  # the Host values it answers; set by make_server
 
     def log_message(self, format, *args):  # noqa: A002 — the stdlib's signature
         pass  # the terminal belongs to the runs' own logging
 
     # GET -----------------------------------------------------------------
     def do_GET(self):
+        if not self._known_host():
+            return
         url = urlsplit(self.path)
         path, query = url.path.rstrip("/") or "/", parse_qs(url.query)
         try:
@@ -944,6 +954,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # POST ----------------------------------------------------------------
     def do_POST(self):
+        if not self._known_host():
+            return
         path = urlsplit(self.path).path.rstrip("/")
         try:
             # A page on another origin cannot read these responses, but it could
@@ -952,6 +964,11 @@ class Handler(BaseHTTPRequestHandler):
             if origin and origin.split("://", 1)[-1] != self.headers.get("Host"):
                 self._drain()  # unread, the body turns the refusal into a connection reset on Windows
                 raise ApiError("Cross-origin request refused.", HTTPStatus.FORBIDDEN)
+            # A plain HTML form can post text/plain without a preflight; the pages always send JSON.
+            if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+                self._drain()
+                raise ApiError("Send the request body as JSON (Content-Type: application/json).",
+                               HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
             body = self._body()
             registry = self.registry
             match path.strip("/").split("/"):
@@ -1029,13 +1046,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"{type(exc).__name__}: {exc}"},
                             HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def _known_host(self) -> bool:
+        """Whether the Host header names this server. A page on another domain that
+        resolves to 127.0.0.1 (DNS rebinding) sends its own name, and gets a 421."""
+        if (self.headers.get("Host") or "").strip().lower() in self.allowed_hosts:
+            return True
+        self._drain()
+        port = self.server.server_address[1]
+        self._send_json({"error": f"Unknown host; open the UI at http://localhost:{port}."},
+                        HTTPStatus.MISDIRECTED_REQUEST)
+        return False
+
+    def _length(self) -> int:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:
+            raise ApiError("Content-Length is not a byte count.")
+        return length
+
     def _drain(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = self._length()
+        except ApiError:
+            return
         if 0 < length <= 5_000_000:
             self.rfile.read(length)
 
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        length = self._length()
         if length > 5_000_000:
             raise ApiError("Request too large.", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         try:
@@ -1086,22 +1126,50 @@ class Handler(BaseHTTPRequestHandler):
         self._send(data, kind, headers={"Content-Disposition": f'attachment; filename="{safe}"'})
 
 
+WILDCARDS = ("0.0.0.0", "::", "")
+
+
+def _authority(name: str, port: int) -> str:
+    """``name`` as a Host header carries it: ``name:port``, IPv6 in brackets. A name
+    that already has a port keeps it."""
+    name = name.strip().lower()
+    if name.startswith("["):
+        return name if "]:" in name else f"{name}:{port}"
+    if name.count(":") > 1:  # a bare IPv6 address
+        return f"[{name}]:{port}"
+    return name if ":" in name else f"{name}:{port}"
+
+
+def allowed_hosts(host: str, port: int, extra=()) -> frozenset[str]:
+    """The Host values the server answers: the loopback names, the address it is bound
+    to when that is a specific one, and the names ``--allow-host`` gives (the only
+    way in from other machines when bound to 0.0.0.0)."""
+    names = ["127.0.0.1", "localhost", "::1", *extra]
+    if host not in WILDCARDS:
+        names.append(host)
+    out = {_authority(n, port) for n in names if n.strip()}
+    if port == 80:  # browsers leave the default port out
+        out |= {a.removesuffix(":80") for a in out if a.endswith(":80")}
+    return frozenset(out)
+
+
 def make_server(host: str = "127.0.0.1", port: int = 8501,
-                registry: JobRegistry | None = None, poller=None) -> ThreadingHTTPServer:
+                registry: JobRegistry | None = None, poller=None, allow_hosts=()) -> ThreadingHTTPServer:
     registry = registry or JobRegistry()
     handler = type("BoundHandler", (Handler,), {"registry": registry, "queue": AnalysisQueue(registry),
                                                 "poller": poller})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
+    handler.allowed_hosts = allowed_hosts(host, server.server_address[1], allow_hosts)  # port 0 is bound now
     return server
 
 
-def serve(host: str, port: int, open_browser: bool = True) -> None:
+def serve(host: str, port: int, open_browser: bool = True, allow_hosts=()) -> None:
     from tradingagents.screener.alerts import PricePoller
 
     poller = PricePoller.from_config()
-    server = make_server(host, port, poller=poller)
-    url = f"http://{'localhost' if host in ('127.0.0.1', '0.0.0.0', '::') else host}:{port}"
+    server = make_server(host, port, poller=poller, allow_hosts=allow_hosts)
+    url = f"http://{'localhost' if host in ('127.0.0.1', *WILDCARDS) else host}:{port}"
     print(f"TradingAgents UI on {url}  (Ctrl+C to stop)")
     if poller is not None:
         poller.start()

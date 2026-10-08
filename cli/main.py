@@ -170,17 +170,22 @@ def learn(
     console.print(f"Feature table: {result.table_path}", soft_wrap=True)
 
 
+ALLOW_HOST = typer.Option(None, "--allow-host", help="A host name the UI may be opened by (repeatable); "
+                         "needed with --host 0.0.0.0 to open it from another machine")
+
+
 @app.command()
 def ui(
     port: int = typer.Option(8501, "--port", help="Port to serve the UI on"),
     host: str = typer.Option("127.0.0.1", "--host", help="Address to bind; 0.0.0.0 exposes it on your network"),
     no_browser: bool = typer.Option(False, "--no-browser", help="Do not open a browser tab"),
+    allow_host: list[str] = ALLOW_HOST,
 ):
     """Open the browser UI: live analysis, saved reports and backtests."""
     from cli.webui.server import serve
 
     try:
-        serve(host, port, open_browser=not no_browser)
+        serve(host, port, open_browser=not no_browser, allow_hosts=allow_host or ())
     except OSError as exc:  # port taken, or an address this machine does not have
         console.print(f"[red]Could not start the UI on {host}:{port}: {exc}[/red]")
         raise typer.Exit(code=1) from None

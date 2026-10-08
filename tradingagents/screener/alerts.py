@@ -133,10 +133,7 @@ def _short(number: float) -> str:
 # --- Saving -------------------------------------------------------------------------------
 
 def _row(conn, alert_id):
-    try:
-        alert_id = int(alert_id)
-    except (TypeError, ValueError):
-        raise AlertError("No such alert.") from None
+    alert_id = userdb.record_id(alert_id, AlertError("No such alert."))
     row = conn.execute("SELECT * FROM alerts WHERE id=?", (alert_id,)).fetchone()
     if row is None:
         raise AlertError("No such alert.")
@@ -148,7 +145,10 @@ def find_screen(conn, ref) -> dict | None:
     ref = str(ref or "")
     if ref.startswith("preset:"):
         return screens.get_preset(ref)
-    return screens.get_screen(conn, int(ref)) if ref.isdigit() else None
+    try:
+        return screens.get_screen(conn, userdb.record_id(ref, LookupError()))
+    except LookupError:
+        return None
 
 
 def _stock(body: dict, india_conn) -> tuple[str, str]:
@@ -758,7 +758,7 @@ def inbox(conn, *, unread_only: bool = False, alert_id=None, limit: int = 200) -
         where.append("read_at IS NULL")
     if alert_id not in (None, ""):
         where.append("alert_id = ?")
-        args.append(int(alert_id))
+        args.append(userdb.record_id(alert_id, AlertError("No such alert.")))
     sql = "SELECT * FROM alert_events" + (f" WHERE {' AND '.join(where)}" if where else "")
     rows = conn.execute(sql + " ORDER BY fired_at DESC, id DESC LIMIT ?", [*args, max(1, min(int(limit), 1000))])
     total = conn.execute("SELECT COUNT(*) FROM alert_events").fetchone()[0]
@@ -770,10 +770,7 @@ def _ids(ids) -> list[int] | None:
         return None
     if not isinstance(ids, list):
         raise AlertError("Send the inbox items' ids as a list, or 'all'.")
-    try:
-        return [int(i) for i in ids]
-    except (TypeError, ValueError):
-        raise AlertError("Inbox item ids are numbers.") from None
+    return [userdb.record_id(i, AlertError("Inbox item ids are numbers from 1.")) for i in ids]
 
 
 def mark_read(conn, ids=None, read: bool = True) -> int:
