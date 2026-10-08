@@ -104,12 +104,16 @@ def base(tmp_path, monkeypatch):
     httpd.server_close()
 
 
+# The server is on loopback: never send its requests through HTTP_PROXY.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def call(base, path, body=None, headers=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(base + path, data=data, headers={
         "Content-Type": "application/json", **(headers or {})})
     try:
-        with urllib.request.urlopen(req, timeout=5) as res:
+        with OPENER.open(req, timeout=5) as res:
             raw = res.read()
             kind = res.headers.get("Content-Type", "")
             return res.status, json.loads(raw) if kind.startswith("application/json") else raw
