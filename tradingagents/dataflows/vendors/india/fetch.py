@@ -2,11 +2,11 @@
 
 Only archives.nseindia.com is ever asked (``ALLOWED_HOSTS``), and a redirect is
 never followed: one to another host stops the run, one within the host fails
-that file. Every request waits its turn per host (one a second, or longer with
-TRADINGAGENTS_INDIA_REQUEST_INTERVAL; never shorter), says who is asking
-(TradingAgents and its version, always; TRADINGAGENTS_INDIA_USER_AGENT adds your
-contact to it), retries a timeout or a server error with growing pauses, and
-honours Retry-After.
+that file. Every request waits its turn per host (a second after the previous
+answer ended, or longer with TRADINGAGENTS_INDIA_REQUEST_INTERVAL; never
+shorter), says who is asking (TradingAgents and its version, always;
+TRADINGAGENTS_INDIA_USER_AGENT adds your contact to it), retries a timeout or a
+server error with growing pauses, and honours Retry-After.
 
 Nothing here works around an access control. archives.nseindia.com answers a
 path it does not serve (bhavcopies before 2016, say) with the same Akamai
@@ -90,7 +90,7 @@ class ArchiveClient:
                                      "Accept": "*/*", "Accept-Language": "en-IN,en;q=0.8"})
         self.sleep, self.clock = sleep, clock
         self.canary_url = canary_url
-        self._last: dict[str, float] = {}
+        self._last: dict[str, float] = {}  # host -> when its latest answer ended
         self._refusals: dict[str, bool] = {}  # host -> the canary's latest verdict
         self._unchecked: dict[str, int] = {}  # host -> 403s taken as missing since a file was served
         self.requests = 0
@@ -132,15 +132,21 @@ class ArchiveClient:
             remaining = self.interval - (self.clock() - last)
             if remaining > 0:
                 self.sleep(remaining)
-        self._last[host] = self.clock()
 
     def _request(self, url: str, **kwargs) -> requests.Response:
         host = urlsplit(url).hostname
         if host not in ALLOWED_HOSTS:
             raise SourceBlocked(f"refusing to fetch {host}: not an allowed archive host")
-        self._wait(urlsplit(url).netloc)
+        netloc = urlsplit(url).netloc
+        self._wait(netloc)
         self.requests += 1
-        return self.session.get(url, timeout=self.timeout, allow_redirects=False, **kwargs)
+        try:
+            return self.session.get(url, timeout=self.timeout, allow_redirects=False, **kwargs)
+        finally:
+            # The interval runs from the end of this answer (or failure), not from the moment
+            # before the request: requests prepares a request after that moment, so a stamp
+            # there could let two requests reach the wire less than a second apart.
+            self._last[netloc] = self.clock()
 
     def _download(self, url: str) -> bytes | None:
         pause = 2.0

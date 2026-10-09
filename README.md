@@ -396,7 +396,7 @@ The downloads can be tuned with environment variables (or `.env`):
 | Variable | Effect |
 | --- | --- |
 | `TRADINGAGENTS_INDIA_DB` | the database file (default `~/.tradingagents/india/india.db`) |
-| `TRADINGAGENTS_INDIA_REQUEST_INTERVAL` | seconds between requests to the archive; at least 1, and a smaller value is raised to 1 |
+| `TRADINGAGENTS_INDIA_REQUEST_INTERVAL` | seconds from the end of one answer from the archive to the next request; at least 1, and a smaller value is raised to 1 |
 | `TRADINGAGENTS_INDIA_USER_AGENT` | your contact (an email or URL), appended to the `TradingAgents/<version>` User-Agent every request carries |
 
 Sources and their terms (checked 2026-10-05):

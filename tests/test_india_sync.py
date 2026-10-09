@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
 from typer.testing import CliRunner
 
 import tradingagents.dataflows.config as config_module
@@ -277,6 +278,46 @@ def test_requests_are_throttled_per_host_and_identify_the_caller(tmp_path):
     c.get("https://archives.nseindia.com/b.csv", "b.csv")
     assert slept == [1.0]
     assert c.session.headers["User-Agent"].startswith("TradingAgents/")
+
+
+def test_each_request_reaches_the_wire_a_second_after_the_previous_answer_ended(tmp_path):
+    # A real requests.Session, so its own preparation runs between the client's wait and the
+    # hand-off. The adapter takes that preparation (slowest first, as the live smoke B4 saw) and
+    # each answer's time from the fake clock, and records when each request reached it.
+    clock, handed, ended = [0.0], [], []
+    script = [(200, 0.001, 0.05),  # a.csv
+              (403, 0.0004, 0.8), (200, 0.0006, 0.3),  # old.zip, then the canary
+              (503, 0.0005, 0.05), (200, 0.0004, 0.1),  # b.csv, retried
+              *[(requests.ConnectionError(), 0.0004, 0.0)] * 3,  # c.csv fails at once, three times
+              (404, 0.0004, 0.2)]  # d.csv
+
+    class Adapter(HTTPAdapter):
+        def send(self, request, **kwargs):
+            outcome, prep, answer = script.pop(0)
+            clock[0] += prep
+            handed.append(clock[0])
+            clock[0] += answer
+            ended.append(clock[0])
+            if isinstance(outcome, Exception):
+                raise outcome
+            response = requests.Response()
+            response.status_code, response.url, response.request = outcome, request.url, request
+            response._content, response._content_consumed = b"x", True
+            return response
+
+    session = requests.Session()
+    session.mount("https://", Adapter())
+    c = ArchiveClient(tmp_path, session=session, clock=lambda: clock[0],
+                      sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+    assert c.get("https://archives.nseindia.com/a.csv", "a.csv") == b"x"
+    assert c.get("https://archives.nseindia.com/old.zip", "old.zip") is None
+    assert c.get("https://archives.nseindia.com/b.csv", "b.csv") == b"x"
+    with pytest.raises(FetchFailed):
+        c.get("https://archives.nseindia.com/c.csv", "c.csv")
+    assert c.get("https://archives.nseindia.com/d.csv", "d.csv") is None
+    assert script == [] and len(handed) == 9
+    assert min(b - a for a, b in zip(handed[:-1], handed[1:], strict=True)) >= 1.0
+    assert all(next_ - end >= 1.0 for end, next_ in zip(ended[:-1], handed[1:], strict=True))
 
 
 def test_the_interval_never_drops_below_one_second(tmp_path):
